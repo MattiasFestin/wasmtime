@@ -124,7 +124,7 @@ impl Compiler {
         }
     }
 
-    /// Peform an indirect call from Cranelift-generated code to native code in
+    /// Perform an indirect call from Cranelift-generated code to native code in
     /// Wasmtime itself.
     ///
     /// For native platforms this is a simple `call_indirect` instruction but
@@ -191,7 +191,9 @@ impl wasmtime_environ::Compiler for Compiler {
         let isa = &*self.isa;
         let module = &translation.module;
         let func_index = module.func_index(func_index);
-        let sig = translation.module.functions[func_index].signature;
+        let sig = translation.module.functions[func_index]
+            .signature
+            .unwrap_module_type_index();
         let wasm_func_ty = types[sig].unwrap_func();
 
         let mut compiler = self.function_compiler();
@@ -222,7 +224,7 @@ impl wasmtime_environ::Compiler for Compiler {
         // The way that stack overflow is handled here is by adding a prologue
         // check to all functions for how much native stack is remaining. The
         // `VMContext` pointer is the first argument to all functions, and the
-        // first field of this structure is `*const VMRuntimeLimits` and the
+        // first field of this structure is `*const VMStoreContext` and the
         // first field of that is the stack limit. Note that the stack limit in
         // this case means "if the stack pointer goes below this, trap". Each
         // function which consumes stack space or isn't a leaf function starts
@@ -253,7 +255,7 @@ impl wasmtime_environ::Compiler for Compiler {
             });
             let stack_limit = context.func.create_global_value(ir::GlobalValueData::Load {
                 base: interrupts_ptr,
-                offset: i32::from(func_env.offsets.ptr.vmruntime_limits_stack_limit()).into(),
+                offset: i32::from(func_env.offsets.ptr.vmstore_context_stack_limit()).into(),
                 global_type: isa.pointer_type(),
                 flags: MemFlags::trusted(),
             });
@@ -273,18 +275,10 @@ impl wasmtime_environ::Compiler for Compiler {
             &mut func_env,
         )?;
 
-        if let Some(path) = &self.clif_dir {
-            use std::io::Write;
-
-            let mut path = path.to_path_buf();
-            path.push(format!("wasm_func_{}", func_index.as_u32()));
-            path.set_extension("clif");
-
-            let mut output = std::fs::File::create(path).unwrap();
-            write!(output, "{}", context.func.display()).unwrap();
-        }
-
-        let (info, func) = compiler.finish_with_info(Some((&body, &self.tunables)))?;
+        let (info, func) = compiler.finish_with_info(
+            Some((&body, &self.tunables)),
+            &format!("wasm_func_{}", func_index.as_u32()),
+        )?;
 
         let timing = cranelift_codegen::timing::take_current();
         log::debug!("{:?} translated in {:?}", func_index, timing.total());
@@ -300,7 +294,9 @@ impl wasmtime_environ::Compiler for Compiler {
         def_func_index: DefinedFuncIndex,
     ) -> Result<Box<dyn Any + Send>, CompileError> {
         let func_index = translation.module.func_index(def_func_index);
-        let sig = translation.module.functions[func_index].signature;
+        let sig = translation.module.functions[func_index]
+            .signature
+            .unwrap_module_type_index();
         let wasm_func_ty = types[sig].unwrap_func();
 
         let isa = &*self.isa;
@@ -363,7 +359,10 @@ impl wasmtime_environ::Compiler for Compiler {
         builder.ins().return_(&[true_return]);
         builder.finalize();
 
-        Ok(Box::new(compiler.finish()?))
+        Ok(Box::new(compiler.finish(&format!(
+            "array_to_wasm_{}",
+            func_index.as_u32(),
+        ))?))
     }
 
     fn compile_wasm_to_array_trampoline(
@@ -394,13 +393,13 @@ impl wasmtime_environ::Compiler for Compiler {
             wasmtime_environ::VMCONTEXT_MAGIC,
         );
         let ptr = isa.pointer_bytes();
-        let limits = builder.ins().load(
+        let vm_store_context = builder.ins().load(
             pointer_type,
             MemFlags::trusted(),
             caller_vmctx,
-            i32::from(ptr.vmcontext_runtime_limits()),
+            i32::from(ptr.vmcontext_store_context()),
         );
-        save_last_wasm_exit_fp_and_pc(&mut builder, pointer_type, &ptr, limits);
+        save_last_wasm_exit_fp_and_pc(&mut builder, pointer_type, &ptr, vm_store_context);
 
         // Spill all wasm arguments to the stack in `ValRaw` slots.
         let (args_base, args_len) =
@@ -433,7 +432,9 @@ impl wasmtime_environ::Compiler for Compiler {
         builder.ins().return_(&results);
         builder.finalize();
 
-        Ok(Box::new(compiler.finish()?))
+        Ok(Box::new(compiler.finish(&format!(
+            "wasm_to_array_trampoline_{wasm_func_ty}"
+        ))?))
     }
 
     fn append_code(
@@ -591,13 +592,13 @@ impl wasmtime_environ::Compiler for Compiler {
         // additionally perform the "routine of the exit trampoline" of saving
         // fp/pc/etc.
         debug_assert_vmctx_kind(isa, &mut builder, vmctx, wasmtime_environ::VMCONTEXT_MAGIC);
-        let limits = builder.ins().load(
+        let vm_store_context = builder.ins().load(
             pointer_type,
             MemFlags::trusted(),
             vmctx,
-            ptr_size.vmcontext_runtime_limits(),
+            ptr_size.vmcontext_store_context(),
         );
-        save_last_wasm_exit_fp_and_pc(&mut builder, pointer_type, &ptr_size, limits);
+        save_last_wasm_exit_fp_and_pc(&mut builder, pointer_type, &ptr_size, vm_store_context);
 
         // Now it's time to delegate to the actual builtin. Forward all our own
         // arguments to the libcall itself.
@@ -643,7 +644,9 @@ impl wasmtime_environ::Compiler for Compiler {
         builder.ins().return_(&results);
         builder.finalize();
 
-        Ok(Box::new(compiler.finish()?))
+        Ok(Box::new(
+            compiler.finish(&format!("wasm_to_builtin_{}", index.name()))?,
+        ))
     }
 
     fn compiled_function_relocation_targets<'a>(
@@ -959,8 +962,8 @@ impl FunctionCompiler<'_> {
         (builder, block0)
     }
 
-    fn finish(self) -> Result<CompiledFunction, CompileError> {
-        let (info, func) = self.finish_with_info(None)?;
+    fn finish(self, clif_filename: &str) -> Result<CompiledFunction, CompileError> {
+        let (info, func) = self.finish_with_info(None, clif_filename)?;
         assert!(info.stack_maps.is_empty());
         Ok(func)
     }
@@ -968,11 +971,30 @@ impl FunctionCompiler<'_> {
     fn finish_with_info(
         mut self,
         body_and_tunables: Option<(&FunctionBody<'_>, &Tunables)>,
+        clif_filename: &str,
     ) -> Result<(WasmFunctionInfo, CompiledFunction), CompileError> {
         let context = &mut self.cx.codegen_context;
         let isa = &*self.compiler.isa;
-        let mut compiled_code =
-            compile_maybe_cached(context, isa, self.cx.incremental_cache_ctx.as_mut())?;
+
+        // Run compilation, but don't propagate the error just yet. This'll
+        // mutate `context` and the IR contained within (optionally) but it may
+        // fail if the backend has a bug in it. Use `context` after this
+        // finishes to optionally emit CLIF and then after that's done actually
+        // propagate the error if one happened.
+        let compilation_result =
+            compile_maybe_cached(context, isa, self.cx.incremental_cache_ctx.as_mut());
+
+        if let Some(path) = &self.compiler.clif_dir {
+            use std::io::Write;
+
+            let mut path = path.join(clif_filename);
+            path.set_extension("clif");
+
+            let mut output = std::fs::File::create(path).unwrap();
+            write!(output, "{}", context.func.display()).unwrap();
+        }
+
+        let mut compiled_code = compilation_result?;
 
         // Give wasm functions, user defined code, a "preferred" alignment
         // instead of the minimum alignment as this can help perf in niche
@@ -1135,15 +1157,15 @@ fn save_last_wasm_entry_fp(
     builder: &mut FunctionBuilder,
     pointer_type: ir::Type,
     ptr_size: &impl PtrSize,
-    vm_runtime_limits_offset: u32,
+    vm_store_context_offset: u32,
     vmctx: Value,
 ) {
-    // First we need to get the `VMRuntimeLimits`.
-    let limits = builder.ins().load(
+    // First we need to get the `VMStoreContext`.
+    let vm_store_context = builder.ins().load(
         pointer_type,
         MemFlags::trusted(),
         vmctx,
-        i32::try_from(vm_runtime_limits_offset).unwrap(),
+        i32::try_from(vm_store_context_offset).unwrap(),
     );
 
     // Then store our current stack pointer into the appropriate slot.
@@ -1151,8 +1173,8 @@ fn save_last_wasm_entry_fp(
     builder.ins().store(
         MemFlags::trusted(),
         fp,
-        limits,
-        ptr_size.vmruntime_limits_last_wasm_entry_fp(),
+        vm_store_context,
+        ptr_size.vmstore_context_last_wasm_entry_fp(),
     );
 }
 
@@ -1179,7 +1201,7 @@ fn save_last_wasm_exit_fp_and_pc(
         MemFlags::trusted(),
         wasm_fp,
         limits,
-        ptr.vmruntime_limits_last_wasm_exit_fp(),
+        ptr.vmstore_context_last_wasm_exit_fp(),
     );
     // Finally save the Wasm return address to the limits.
     let wasm_pc = builder.ins().get_return_address(pointer_type);
@@ -1187,6 +1209,6 @@ fn save_last_wasm_exit_fp_and_pc(
         MemFlags::trusted(),
         wasm_pc,
         limits,
-        ptr.vmruntime_limits_last_wasm_exit_pc(),
+        ptr.vmstore_context_last_wasm_exit_pc(),
     );
 }

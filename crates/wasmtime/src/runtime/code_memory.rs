@@ -1,7 +1,7 @@
 //! Memory management for executable code.
 
 use crate::prelude::*;
-use crate::runtime::vm::{libcalls, MmapVec, UnwindRegistration};
+use crate::runtime::vm::{libcalls, MmapVec};
 use crate::Engine;
 use alloc::sync::Arc;
 use core::ops::Range;
@@ -16,7 +16,8 @@ use wasmtime_environ::{lookup_trap_code, obj, Trap};
 /// executable permissions of the contained JIT code as necessary.
 pub struct CodeMemory {
     mmap: MmapVec,
-    unwind_registration: Option<UnwindRegistration>,
+    #[cfg(has_host_compiler_backend)]
+    unwind_registration: Option<crate::runtime::vm::UnwindRegistration>,
     #[cfg(feature = "debug-builtins")]
     debug_registration: Option<crate::runtime::vm::GdbJitImageRegistration>,
     published: bool,
@@ -50,6 +51,7 @@ impl Drop for CodeMemory {
         }
 
         // Drop the registrations before `self.mmap` since they (implicitly) refer to it.
+        #[cfg(has_host_compiler_backend)]
         let _ = self.unwind_registration.take();
         #[cfg(feature = "debug-builtins")]
         let _ = self.debug_registration.take();
@@ -175,7 +177,8 @@ impl CodeMemory {
                         relocations.push((offset, libcall));
                     }
                 }
-                UnwindRegistration::SECTION_NAME => unwind = range,
+                #[cfg(has_host_compiler_backend)]
+                crate::runtime::vm::UnwindRegistration::SECTION_NAME => unwind = range,
                 obj::ELF_WASM_DATA => wasm_data = range,
                 obj::ELF_WASMTIME_ADDRMAP => address_map_data = range,
                 obj::ELF_WASMTIME_TRAPS => trap_data = range,
@@ -189,8 +192,13 @@ impl CodeMemory {
             }
         }
 
+        // require mutability even when this is turned off
+        #[cfg(not(has_host_compiler_backend))]
+        let _ = &mut unwind;
+
         Ok(Self {
             mmap,
+            #[cfg(has_host_compiler_backend)]
             unwind_registration: None,
             #[cfg(feature = "debug-builtins")]
             debug_registration: None,
@@ -315,13 +323,13 @@ impl CodeMemory {
             // Note that if virtual memory is disabled this is skipped because
             // we aren't able to make it readonly, but this is just a
             // defense-in-depth measure and isn't required for correctness.
-            #[cfg(feature = "signals-based-traps")]
+            #[cfg(has_virtual_memory)]
             self.mmap.make_readonly(0..self.mmap.len())?;
 
             // Switch the executable portion from readonly to read/execute.
             if self.needs_executable {
                 if !self.custom_publish()? {
-                    #[cfg(feature = "signals-based-traps")]
+                    #[cfg(has_virtual_memory)]
                     {
                         let text = self.text();
 
@@ -341,7 +349,7 @@ impl CodeMemory {
                         // Flush any in-flight instructions from the pipeline
                         icache_coherence::pipeline_flush_mt().expect("Failed pipeline flush");
                     }
-                    #[cfg(not(feature = "signals-based-traps"))]
+                    #[cfg(not(has_virtual_memory))]
                     bail!("this target requires virtual memory to be enabled");
                 }
             }
@@ -419,13 +427,23 @@ impl CodeMemory {
         if self.unwind.len() == 0 {
             return Ok(());
         }
-        let text = self.text();
-        let unwind_info = &self.mmap[self.unwind.clone()];
-        let registration =
-            UnwindRegistration::new(text.as_ptr(), unwind_info.as_ptr(), unwind_info.len())
-                .context("failed to create unwind info registration")?;
-        self.unwind_registration = Some(registration);
-        Ok(())
+        #[cfg(has_host_compiler_backend)]
+        {
+            let text = self.text();
+            let unwind_info = &self.mmap[self.unwind.clone()];
+            let registration = crate::runtime::vm::UnwindRegistration::new(
+                text.as_ptr(),
+                unwind_info.as_ptr(),
+                unwind_info.len(),
+            )
+            .context("failed to create unwind info registration")?;
+            self.unwind_registration = Some(registration);
+            return Ok(());
+        }
+        #[cfg(not(has_host_compiler_backend))]
+        {
+            bail!("should not have unwind info for non-native backend")
+        }
     }
 
     #[cfg(feature = "debug-builtins")]

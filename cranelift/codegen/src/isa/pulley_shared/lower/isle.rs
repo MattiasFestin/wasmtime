@@ -33,7 +33,7 @@ type BoxCallIndirectHostInfo = Box<CallInfo<ExternalName>>;
 type BoxReturnCallInfo = Box<ReturnCallInfo<ExternalName>>;
 type BoxReturnCallIndInfo = Box<ReturnCallInfo<XReg>>;
 type BoxExternalName = Box<ExternalName>;
-type XRegSet = pulley_interpreter::RegSet<pulley_interpreter::XReg>;
+type UpperXRegSet = pulley_interpreter::UpperRegSet<pulley_interpreter::XReg>;
 
 #[expect(
     unused_imports,
@@ -127,6 +127,42 @@ where
 
     fn u6_from_u8(&mut self, imm: u8) -> Option<U6> {
         U6::new(imm)
+    }
+
+    fn endianness(&mut self, flags: MemFlags) -> Endianness {
+        flags.endianness(self.backend.isa_flags.endianness())
+    }
+
+    fn is_native_endianness(&mut self, endianness: &Endianness) -> bool {
+        *endianness == self.backend.isa_flags.endianness()
+    }
+
+    fn pointer_width(&mut self) -> PointerWidth {
+        P::pointer_width()
+    }
+
+    fn memflags_nontrapping(&mut self, flags: MemFlags) -> bool {
+        flags.trap_code().is_none()
+    }
+
+    fn memflags_is_wasm(&mut self, flags: MemFlags) -> bool {
+        flags.trap_code() == Some(TrapCode::HEAP_OUT_OF_BOUNDS)
+            && self.endianness(flags) == Endianness::Little
+    }
+
+    fn g32_offset(
+        &mut self,
+        load_offset: i32,
+        load_ty: Type,
+        bound_check_offset: u64,
+    ) -> Option<u16> {
+        // NB: for more docs on this see the ISLE definition.
+        let load_offset = u64::try_from(load_offset).ok()?;
+        let load_bytes = u64::from(load_ty.bytes());
+        if bound_check_offset != load_offset + load_bytes {
+            return None;
+        }
+        u16::try_from(load_offset).ok()
     }
 }
 

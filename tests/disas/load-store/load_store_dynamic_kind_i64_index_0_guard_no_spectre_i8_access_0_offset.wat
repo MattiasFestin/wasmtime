@@ -23,15 +23,15 @@
 ;;     gv1 = load.i64 notrap aligned readonly gv0+8
 ;;     gv2 = load.i64 notrap aligned gv1+16
 ;;     gv3 = vmctx
-;;     gv4 = load.i64 notrap aligned gv3+104
-;;     gv5 = load.i64 notrap aligned checked gv3+96
+;;     gv4 = load.i64 notrap aligned gv3+96
+;;     gv5 = load.i64 notrap aligned checked gv3+88
 ;;     stack_limit = gv2
 ;;
 ;;                                 block0(v0: i64, v1: i64, v2: i64, v3: i32):
-;; @0040                               v4 = global_value.i64 gv4
+;; @0040                               v4 = load.i64 notrap aligned v0+96
 ;; @0040                               v5 = icmp uge v2, v4
 ;; @0040                               trapnz v5, heap_oob
-;; @0040                               v6 = global_value.i64 gv5
+;; @0040                               v6 = load.i64 notrap aligned checked v0+88
 ;; @0040                               v7 = iadd v6, v2
 ;; @0040                               istore8 little heap v3, v7
 ;; @0043                               jump block1
@@ -45,19 +45,19 @@
 ;;     gv1 = load.i64 notrap aligned readonly gv0+8
 ;;     gv2 = load.i64 notrap aligned gv1+16
 ;;     gv3 = vmctx
-;;     gv4 = load.i64 notrap aligned gv3+104
-;;     gv5 = load.i64 notrap aligned checked gv3+96
+;;     gv4 = load.i64 notrap aligned gv3+96
+;;     gv5 = load.i64 notrap aligned checked gv3+88
 ;;     stack_limit = gv2
 ;;
 ;;                                 block0(v0: i64, v1: i64, v2: i64):
-;; @0048                               v4 = global_value.i64 gv4
+;; @0048                               v4 = load.i64 notrap aligned v0+96
 ;; @0048                               v5 = icmp uge v2, v4
 ;; @0048                               trapnz v5, heap_oob
-;; @0048                               v6 = global_value.i64 gv5
+;; @0048                               v6 = load.i64 notrap aligned checked v0+88
 ;; @0048                               v7 = iadd v6, v2
 ;; @0048                               v8 = uload8.i32 little heap v7
-;; @004b                               jump block1(v8)
+;; @004b                               jump block1
 ;;
-;;                                 block1(v3: i32):
-;; @004b                               return v3
+;;                                 block1:
+;; @004b                               return v8
 ;; }

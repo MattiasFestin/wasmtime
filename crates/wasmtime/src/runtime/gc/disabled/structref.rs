@@ -1,7 +1,6 @@
-use crate::runtime::vm::VMGcRef;
 use crate::{
-    store::{AutoAssertNoGc, StoreContextMut, StoreOpaque},
-    AsContext, AsContextMut, GcRefImpl, Result, Rooted, StructType, Val, I31,
+    store::{StoreContextMut, StoreOpaque},
+    AsContext, AsContextMut, GcRefImpl, Result, StructType, Val,
 };
 
 /// Support for `StructRefPre` disabled at compile time because the `gc` cargo
@@ -15,13 +14,6 @@ pub enum StructRef {}
 impl GcRefImpl for StructRef {}
 
 impl StructRef {
-    pub(crate) fn from_cloned_gc_ref(
-        _store: &mut AutoAssertNoGc<'_>,
-        _gc_ref: VMGcRef,
-    ) -> Rooted<Self> {
-        unreachable!()
-    }
-
     pub fn ty(&self, _store: impl AsContext) -> Result<StructType> {
         match *self {}
     }
@@ -37,7 +29,7 @@ impl StructRef {
     pub fn fields<'a, T: 'a>(
         &self,
         _store: impl Into<StoreContextMut<'a, T>>,
-    ) -> Result<impl ExactSizeIterator<Item = Val> + 'a> {
+    ) -> Result<impl ExactSizeIterator<Item = Val> + 'a + '_> {
         match *self {}
         Ok([].into_iter())
     }

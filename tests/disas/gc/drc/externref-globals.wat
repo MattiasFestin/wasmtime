@@ -18,13 +18,13 @@
 ;;     gv1 = load.i64 notrap aligned readonly gv0+8
 ;;     gv2 = load.i64 notrap aligned gv1+16
 ;;     gv3 = vmctx
-;;     sig0 = (i64 vmctx, i32 uext) -> i64 tail
+;;     sig0 = (i64 vmctx, i32) -> i64 tail
 ;;     fn0 = colocated u1:26 sig0
 ;;     stack_limit = gv2
 ;;
 ;;                                 block0(v0: i64, v1: i64):
-;;                                     v45 = iconst.i64 96
-;; @0034                               v4 = iadd v0, v45  ; v45 = 96
+;;                                     v45 = iconst.i64 80
+;; @0034                               v4 = iadd v0, v45  ; v45 = 80
 ;; @0034                               v5 = load.i32 notrap aligned v4
 ;;                                     v46 = stack_addr.i64 ss0
 ;;                                     store notrap v5, v46
@@ -50,16 +50,9 @@
 ;; @0034                               v13 = load.i64 notrap aligned readonly v0+40
 ;; @0034                               v22 = iadd v13, v18
 ;; @0034                               v23 = load.i64 notrap aligned v22
-;;                                     v42 = load.i32 notrap v46
-;; @0034                               v29 = uextend.i64 v42
-;; @0034                               v31 = uadd_overflow_trap v29, v17, user1  ; v17 = 8
-;; @0034                               v33 = uadd_overflow_trap v31, v17, user1  ; v17 = 8
-;; @0034                               v34 = icmp ule v33, v15
-;; @0034                               trapz v34, user1
 ;;                                     v50 = iconst.i64 1
 ;; @0034                               v24 = iadd v23, v50  ; v50 = 1
-;; @0034                               v35 = iadd v13, v31
-;; @0034                               store notrap aligned v24, v35
+;; @0034                               store notrap aligned v24, v22
 ;;                                     v41 = load.i32 notrap v46
 ;; @0034                               store notrap aligned v41, v9
 ;;                                     v53 = iconst.i64 4
@@ -84,13 +77,13 @@
 ;;     gv1 = load.i64 notrap aligned readonly gv0+8
 ;;     gv2 = load.i64 notrap aligned gv1+16
 ;;     gv3 = vmctx
-;;     sig0 = (i64 vmctx, i32 uext) tail
+;;     sig0 = (i64 vmctx, i32) tail
 ;;     fn0 = colocated u1:25 sig0
 ;;     stack_limit = gv2
 ;;
 ;;                                 block0(v0: i64, v1: i64, v2: i32):
-;;                                     v58 = iconst.i64 96
-;; @003b                               v4 = iadd v0, v58  ; v58 = 96
+;;                                     v58 = iconst.i64 80
+;; @003b                               v4 = iadd v0, v58  ; v58 = 80
 ;; @003b                               v5 = load.i32 notrap aligned v4
 ;;                                     v59 = iconst.i32 0
 ;; @003b                               v6 = icmp eq v2, v59  ; v59 = 0
@@ -107,14 +100,13 @@
 ;; @003b                               v33 = load.i64 notrap aligned readonly v0+40
 ;; @003b                               v17 = iadd v33, v13
 ;; @003b                               v18 = load.i64 notrap aligned v17
-;; @003b                               trapz v16, user1
 ;;                                     v60 = iconst.i64 1
 ;; @003b                               v19 = iadd v18, v60  ; v60 = 1
 ;; @003b                               store notrap aligned v19, v17
 ;; @003b                               jump block3
 ;;
 ;;                                 block3:
-;;                                     v64 = iadd.i64 v0, v58  ; v58 = 96
+;;                                     v64 = iadd.i64 v0, v58  ; v58 = 80
 ;; @003b                               store.i32 notrap aligned v2, v64
 ;;                                     v65 = iconst.i32 0
 ;;                                     v66 = icmp.i32 eq v5, v65  ; v65 = 0
@@ -142,7 +134,6 @@
 ;; @003b                               jump block7
 ;;
 ;;                                 block6:
-;; @003b                               trapz.i8 v41, user1
 ;;                                     v70 = iadd.i64 v43, v62  ; v62 = -1
 ;; @003b                               store notrap aligned v70, v42
 ;; @003b                               jump block7

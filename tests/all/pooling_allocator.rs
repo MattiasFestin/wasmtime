@@ -639,16 +639,16 @@ fn instance_too_large() -> Result<()> {
         instance allocation for this module requires 336 bytes which exceeds the \
 configured maximum of 16 bytes; breakdown of allocation requirement:
 
- * 71.43% - 240 bytes - instance state management
- * 26.19% - 88 bytes - static vmctx data
+ * 76.19% - 256 bytes - instance state management
+ * 23.81% - 80 bytes - static vmctx data
 "
     } else {
         "\
-        instance allocation for this module requires 240 bytes which exceeds the \
+instance allocation for this module requires 240 bytes which exceeds the \
 configured maximum of 16 bytes; breakdown of allocation requirement:
 
- * 60.00% - 144 bytes - instance state management
- * 36.67% - 88 bytes - static vmctx data
+ * 66.67% - 160 bytes - instance state management
+ * 33.33% - 80 bytes - static vmctx data
 "
     };
     match Module::new(&engine, "(module)") {
@@ -667,7 +667,7 @@ configured maximum of 16 bytes; breakdown of allocation requirement:
 instance allocation for this module requires 1936 bytes which exceeds the \
 configured maximum of 16 bytes; breakdown of allocation requirement:
 
- * 12.40% - 240 bytes - instance state management
+ * 13.22% - 256 bytes - instance state management
  * 82.64% - 1600 bytes - defined globals
 "
     } else {
@@ -675,7 +675,7 @@ configured maximum of 16 bytes; breakdown of allocation requirement:
 instance allocation for this module requires 1840 bytes which exceeds the \
 configured maximum of 16 bytes; breakdown of allocation requirement:
 
- * 7.83% - 144 bytes - instance state management
+ * 8.70% - 160 bytes - instance state management
  * 86.96% - 1600 bytes - defined globals
 "
     };
@@ -868,6 +868,7 @@ fn total_component_instances_limit() -> Result<()> {
 
 #[test]
 #[cfg(feature = "component-model")]
+#[cfg(target_pointer_width = "64")] // error message tailored for 64-bit
 fn component_instance_size_limit() -> Result<()> {
     let mut pool = crate::small_pool_config();
     pool.max_component_instance_size(1);
@@ -880,7 +881,7 @@ fn component_instance_size_limit() -> Result<()> {
         Ok(_) => panic!("should have hit limit"),
         Err(e) => assert_eq!(
             e.to_string(),
-            "instance allocation for this component requires 64 bytes of `VMComponentContext` space \
+            "instance allocation for this component requires 48 bytes of `VMComponentContext` space \
              which exceeds the configured maximum of 1 bytes"
         ),
     }
@@ -995,15 +996,20 @@ async fn total_stacks_limit() -> Result<()> {
     let mut store1 = Store::new(&engine, ());
     let instance1 = linker.instantiate_async(&mut store1, &module).await?;
     let run1 = instance1.get_func(&mut store1, "run").unwrap();
-    let future1 = run1.call_async(store1, &[], &mut []);
+    let future1 = run1.call_async(&mut store1, &[], &mut []);
 
     let mut store2 = Store::new(&engine, ());
     let instance2 = linker.instantiate_async(&mut store2, &module).await?;
     let run2 = instance2.get_func(&mut store2, "run").unwrap();
-    let future2 = run2.call_async(store2, &[], &mut []);
+    let future2 = run2.call_async(&mut store2, &[], &mut []);
 
     future1.await?;
     future2.await?;
+
+    // Dispose one store via `Drop`, the other via `into_data`, and ensure that
+    // any lingering stacks make their way back to the pool.
+    drop(store1);
+    store2.into_data();
 
     Ok(())
 }
@@ -1255,6 +1261,10 @@ fn tricky_empty_table_with_empty_virtual_memory_alloc() -> Result<()> {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn shared_memory_unsupported() -> Result<()> {
+    // Skip this test on platforms that don't support threads.
+    if crate::threads::engine().is_none() {
+        return Ok(());
+    }
     let mut config = Config::new();
     let mut cfg = PoolingAllocationConfig::default();
     // shrink the size of this allocator
@@ -1287,7 +1297,7 @@ fn shared_memory_unsupported() -> Result<()> {
 fn custom_page_sizes_reusing_same_slot() -> Result<()> {
     let mut config = Config::new();
     config.wasm_custom_page_sizes(true);
-    let mut cfg = PoolingAllocationConfig::default();
+    let mut cfg = crate::small_pool_config();
     // force the memories below to collide in the same memory slot
     cfg.total_memories(1);
     config.allocation_strategy(InstanceAllocationStrategy::Pooling(cfg));
@@ -1333,7 +1343,7 @@ fn custom_page_sizes_reusing_same_slot() -> Result<()> {
 fn instantiate_non_page_aligned_sizes() -> Result<()> {
     let mut config = Config::new();
     config.wasm_custom_page_sizes(true);
-    let mut cfg = PoolingAllocationConfig::default();
+    let mut cfg = crate::small_pool_config();
     cfg.total_memories(1);
     cfg.max_memory_size(761927);
     config.allocation_strategy(InstanceAllocationStrategy::Pooling(cfg));

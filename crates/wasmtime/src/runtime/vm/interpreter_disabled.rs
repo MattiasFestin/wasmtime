@@ -6,7 +6,7 @@
 
 use crate::runtime::vm::VMOpaqueContext;
 use crate::runtime::Uninhabited;
-use crate::ValRaw;
+use crate::{Engine, ValRaw};
 use core::marker;
 use core::mem;
 use core::ptr::NonNull;
@@ -19,7 +19,7 @@ const _: () = assert!(mem::size_of::<Interpreter>() == 0);
 const _: () = assert!(mem::size_of::<Option<Interpreter>>() == 0);
 
 impl Interpreter {
-    pub fn new() -> Interpreter {
+    pub fn new(_engine: &Engine) -> Interpreter {
         unreachable!()
     }
 
@@ -40,9 +40,9 @@ impl InterpreterRef<'_> {
     pub unsafe fn call(
         self,
         _bytecode: NonNull<u8>,
-        _callee: *mut VMOpaqueContext,
-        _caller: *mut VMOpaqueContext,
-        _args_and_results: *mut [ValRaw],
+        _callee: NonNull<VMOpaqueContext>,
+        _caller: NonNull<VMOpaqueContext>,
+        _args_and_results: NonNull<[ValRaw]>,
     ) -> bool {
         match self.empty {}
     }

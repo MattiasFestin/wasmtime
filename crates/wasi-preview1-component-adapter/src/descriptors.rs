@@ -149,8 +149,8 @@ pub struct Descriptors {
 }
 
 #[cfg(not(feature = "proxy"))]
-#[link(wasm_import_module = "wasi:filesystem/preopens@0.2.2")]
-extern "C" {
+#[link(wasm_import_module = "wasi:filesystem/preopens@0.2.3")]
+unsafe extern "C" {
     #[link_name = "get-directories"]
     fn wasi_filesystem_get_directories(rval: *mut PreopenList);
 }
@@ -270,7 +270,7 @@ impl Descriptors {
             if len >= (*table).len() {
                 return Err(wasi::ERRNO_NOMEM);
             }
-            core::ptr::addr_of_mut!((*table)[len]).write(desc);
+            (&raw mut (*table)[len]).write(desc);
             self.table_len.set(u16::try_from(len + 1).trapping_unwrap());
             Ok(Fd::from(u32::try_from(len).trapping_unwrap()))
         }

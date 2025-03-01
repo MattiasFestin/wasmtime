@@ -17,6 +17,9 @@ use wasmtime_environ::component::{
     MAX_FLAT_RESULTS,
 };
 
+#[cfg(feature = "component-model-async")]
+use crate::component::concurrent::Promise;
+
 /// A statically-typed version of [`Func`] which takes `Params` as input and
 /// returns `Return`.
 ///
@@ -190,6 +193,31 @@ where
             .await?
     }
 
+    /// Start concurrent call to this function.
+    ///
+    /// Unlike [`Self::call`] and [`Self::call_async`] (both of which require
+    /// exclusive access to the store until the completion of the call), calls
+    /// made using this method may run concurrently with other calls to the same
+    /// instance.
+    #[cfg(feature = "component-model-async")]
+    pub async fn call_concurrent<T: Send>(
+        self,
+        mut store: impl AsContextMut<Data = T>,
+        params: Params,
+    ) -> Result<Promise<Return>>
+    where
+        Params: Send + Sync + 'static,
+        Return: Send + Sync + 'static,
+    {
+        let store = store.as_context_mut();
+        assert!(
+            store.0.async_support(),
+            "cannot use `call_concurrent` when async support is not enabled on the config"
+        );
+        _ = params;
+        todo!()
+    }
+
     fn call_impl(&self, mut store: impl AsContextMut, params: Params) -> Result<Return> {
         let store = &mut store.as_context_mut();
         // Note that this is in theory simpler than it might read at this time.
@@ -314,7 +342,7 @@ where
         dst: &ValRaw,
     ) -> Result<Return> {
         assert!(Return::flatten_count() > MAX_FLAT_RESULTS);
-        // FIXME: needs to read an i64 for memory64
+        // FIXME(#4311): needs to read an i64 for memory64
         let ptr = usize::try_from(dst.get_u32())?;
         if ptr % usize::try_from(Return::ALIGN32)? != 0 {
             bail!("return pointer not aligned");
@@ -1052,7 +1080,7 @@ unsafe impl Lift for char {
     }
 }
 
-// TODO: these probably need different constants for memory64
+// FIXME(#4311): these probably need different constants for memory64
 const UTF16_TAG: usize = 1 << 31;
 const MAX_STRING_BYTE_LENGTH: usize = (1 << 31) - 1;
 
@@ -1096,7 +1124,7 @@ unsafe impl Lower for str {
         debug_assert!(matches!(ty, InterfaceType::String));
         debug_assert!(offset % (Self::ALIGN32 as usize) == 0);
         let (ptr, len) = lower_string(cx, self)?;
-        // FIXME: needs memory64 handling
+        // FIXME(#4311): needs memory64 handling
         *cx.get(offset + 0) = u32::try_from(ptr).unwrap().to_le_bytes();
         *cx.get(offset + 4) = u32::try_from(len).unwrap().to_le_bytes();
         Ok(())
@@ -1366,7 +1394,7 @@ unsafe impl Lift for WasmStr {
     #[inline]
     fn lift(cx: &mut LiftContext<'_>, ty: InterfaceType, src: &Self::Lower) -> Result<Self> {
         debug_assert!(matches!(ty, InterfaceType::String));
-        // FIXME: needs memory64 treatment
+        // FIXME(#4311): needs memory64 treatment
         let ptr = src[0].get_u32();
         let len = src[1].get_u32();
         let (ptr, len) = (usize::try_from(ptr)?, usize::try_from(len)?);
@@ -1377,7 +1405,7 @@ unsafe impl Lift for WasmStr {
     fn load(cx: &mut LiftContext<'_>, ty: InterfaceType, bytes: &[u8]) -> Result<Self> {
         debug_assert!(matches!(ty, InterfaceType::String));
         debug_assert!((bytes.as_ptr() as usize) % (Self::ALIGN32 as usize) == 0);
-        // FIXME: needs memory64 treatment
+        // FIXME(#4311): needs memory64 treatment
         let ptr = u32::from_le_bytes(bytes[..4].try_into().unwrap());
         let len = u32::from_le_bytes(bytes[4..].try_into().unwrap());
         let (ptr, len) = (usize::try_from(ptr)?, usize::try_from(len)?);
@@ -1670,7 +1698,7 @@ unsafe impl<T: Lift> Lift for WasmList<T> {
             InterfaceType::List(i) => cx.types[i].element,
             _ => bad_type_info(),
         };
-        // FIXME: needs memory64 treatment
+        // FIXME(#4311): needs memory64 treatment
         let ptr = src[0].get_u32();
         let len = src[1].get_u32();
         let (ptr, len) = (usize::try_from(ptr)?, usize::try_from(len)?);
@@ -1683,7 +1711,7 @@ unsafe impl<T: Lift> Lift for WasmList<T> {
             _ => bad_type_info(),
         };
         debug_assert!((bytes.as_ptr() as usize) % (Self::ALIGN32 as usize) == 0);
-        // FIXME: needs memory64 treatment
+        // FIXME(#4311): needs memory64 treatment
         let ptr = u32::from_le_bytes(bytes[..4].try_into().unwrap());
         let len = u32::from_le_bytes(bytes[4..].try_into().unwrap());
         let (ptr, len) = (usize::try_from(ptr)?, usize::try_from(len)?);
@@ -2456,6 +2484,9 @@ pub fn desc(ty: &InterfaceType) -> &'static str {
         InterfaceType::Enum(_) => "enum",
         InterfaceType::Own(_) => "owned resource",
         InterfaceType::Borrow(_) => "borrowed resource",
+        InterfaceType::Future(_) => "future",
+        InterfaceType::Stream(_) => "stream",
+        InterfaceType::ErrorContext(_) => "error-context",
     }
 }
 

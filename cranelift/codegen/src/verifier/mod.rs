@@ -76,14 +76,12 @@ use crate::ir::{
     ValueList,
 };
 use crate::isa::TargetIsa;
-use crate::iterators::IteratorExtras;
 use crate::print_errors::pretty_verifier_error;
 use crate::settings::FlagsOrIsa;
 use crate::timing;
 use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::cmp::Ordering;
 use core::fmt::{self, Display, Formatter};
 
 /// A verifier error.
@@ -665,6 +663,40 @@ impl<'a> Verifier<'a> {
             } => {
                 self.verify_bitcast(inst, flags, arg, errors)?;
             }
+            LoadNoOffset { opcode, arg, .. } if opcode.can_load() => {
+                self.verify_is_address(inst, arg, errors)?;
+            }
+            Load { opcode, arg, .. } if opcode.can_load() => {
+                self.verify_is_address(inst, arg, errors)?;
+            }
+            AtomicCas {
+                opcode,
+                args: [p, _, _],
+                ..
+            } if opcode.can_load() || opcode.can_store() => {
+                self.verify_is_address(inst, p, errors)?;
+            }
+            AtomicRmw {
+                opcode,
+                args: [p, _],
+                ..
+            } if opcode.can_load() || opcode.can_store() => {
+                self.verify_is_address(inst, p, errors)?;
+            }
+            Store {
+                opcode,
+                args: [_, p],
+                ..
+            } if opcode.can_store() => {
+                self.verify_is_address(inst, p, errors)?;
+            }
+            StoreNoOffset {
+                opcode,
+                args: [_, p],
+                ..
+            } if opcode.can_store() => {
+                self.verify_is_address(inst, p, errors)?;
+            }
             UnaryConst {
                 opcode: opcode @ (Opcode::Vconst | Opcode::F128const),
                 constant_handle,
@@ -1048,6 +1080,31 @@ impl<'a> Verifier<'a> {
         }
     }
 
+    fn verify_is_address(
+        &self,
+        loc_inst: Inst,
+        v: Value,
+        errors: &mut VerifierErrors,
+    ) -> VerifierStepResult {
+        if let Some(isa) = self.isa {
+            let pointer_width = isa.triple().pointer_width()?;
+            let value_type = self.func.dfg.value_type(v);
+            let expected_width = pointer_width.bits() as u32;
+            let value_width = value_type.bits();
+            if expected_width != value_width {
+                errors.nonfatal((
+                    loc_inst,
+                    self.context(loc_inst),
+                    format!("invalid pointer width (got {value_width}, expected {expected_width}) encountered {v}"),
+                ))
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    }
+
     fn domtree_integrity(
         &self,
         domtree: &DominatorTree,
@@ -1084,18 +1141,6 @@ impl<'a> Verifier<'a> {
                     test_block,
                     format!(
                         "invalid domtree, postorder block number {index} should be {true_block}, got {test_block}"
-                    ),
-                ));
-            }
-        }
-        // We verify rpo_cmp_block on pairs of adjacent blocks in the postorder
-        for (&prev_block, &next_block) in domtree.cfg_postorder().iter().adjacent_pairs() {
-            if self.expected_domtree.rpo_cmp_block(prev_block, next_block) != Ordering::Greater {
-                return errors.fatal((
-                    next_block,
-                    format!(
-                        "invalid domtree, rpo_cmp_block does not say {} is greater than {}; rpo = {:#?}",
-                        prev_block, next_block, domtree.cfg_postorder()
                     ),
                 ));
             }

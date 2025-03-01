@@ -116,35 +116,43 @@ impl std::error::Error for MemoryAccessError {}
 ///     // First and foremost, any borrow can be invalidated at any time via the
 ///     // `Memory::grow` function. This can relocate memory which causes any
 ///     // previous pointer to be possibly invalid now.
-///     let pointer: &u8 = &*mem.data_ptr(&store);
-///     mem.grow(&mut *store, 1)?; // invalidates `pointer`!
-///     // println!("{}", *pointer); // FATAL: use-after-free
+///     unsafe {
+///         let pointer: &u8 = &*mem.data_ptr(&store);
+///         mem.grow(&mut *store, 1)?; // invalidates `pointer`!
+///         // println!("{}", *pointer); // FATAL: use-after-free
+///     }
 ///
 ///     // Note that the use-after-free also applies to slices, whether they're
 ///     // slices of bytes or strings.
-///     let mem_slice = std::slice::from_raw_parts(
-///         mem.data_ptr(&store),
-///         mem.data_size(&store),
-///     );
-///     let slice: &[u8] = &mem_slice[0x100..0x102];
-///     mem.grow(&mut *store, 1)?; // invalidates `slice`!
-///     // println!("{:?}", slice); // FATAL: use-after-free
+///     unsafe {
+///         let mem_slice = std::slice::from_raw_parts(
+///             mem.data_ptr(&store),
+///             mem.data_size(&store),
+///         );
+///         let slice: &[u8] = &mem_slice[0x100..0x102];
+///         mem.grow(&mut *store, 1)?; // invalidates `slice`!
+///         // println!("{:?}", slice); // FATAL: use-after-free
+///     }
 ///
 ///     // The `Memory` type may be stored in other locations, so if you hand
 ///     // off access to the `Store` then those locations may also call
 ///     // `Memory::grow` or similar, so it's not enough to just audit code for
 ///     // calls to `Memory::grow`.
-///     let pointer: &u8 = &*mem.data_ptr(&store);
-///     some_other_function(store); // may invalidate `pointer` through use of `store`
-///     // println!("{:?}", pointer); // FATAL: maybe a use-after-free
+///     unsafe {
+///         let pointer: &u8 = &*mem.data_ptr(&store);
+///         some_other_function(store); // may invalidate `pointer` through use of `store`
+///         // println!("{:?}", pointer); // FATAL: maybe a use-after-free
+///     }
 ///
 ///     // An especially subtle aspect of accessing a wasm instance's memory is
 ///     // that you need to be extremely careful about aliasing. Anyone at any
 ///     // time can call `data_unchecked()` or `data_unchecked_mut()`, which
 ///     // means you can easily have aliasing mutable references:
-///     let ref1: &u8 = &*mem.data_ptr(&store).add(0x100);
-///     let ref2: &mut u8 = &mut *mem.data_ptr(&store).add(0x100);
-///     // *ref2 = *ref1; // FATAL: violates Rust's aliasing rules
+///     unsafe {
+///         let ref1: &u8 = &*mem.data_ptr(&store).add(0x100);
+///         let ref2: &mut u8 = &mut *mem.data_ptr(&store).add(0x100);
+///         // *ref2 = *ref1; // FATAL: violates Rust's aliasing rules
+///     }
 ///
 ///     Ok(())
 /// }
@@ -357,9 +365,9 @@ impl Memory {
     pub fn data<'a, T: 'a>(&self, store: impl Into<StoreContext<'a, T>>) -> &'a [u8] {
         unsafe {
             let store = store.into();
-            let definition = &*store[self.0].definition;
+            let definition = store[self.0].definition.as_ref();
             debug_assert!(!self.ty(store).is_shared());
-            slice::from_raw_parts(definition.base, definition.current_length())
+            slice::from_raw_parts(definition.base.as_ptr(), definition.current_length())
         }
     }
 
@@ -374,9 +382,9 @@ impl Memory {
     pub fn data_mut<'a, T: 'a>(&self, store: impl Into<StoreContextMut<'a, T>>) -> &'a mut [u8] {
         unsafe {
             let store = store.into();
-            let definition = &*store[self.0].definition;
+            let definition = store[self.0].definition.as_ref();
             debug_assert!(!self.ty(store).is_shared());
-            slice::from_raw_parts_mut(definition.base, definition.current_length())
+            slice::from_raw_parts_mut(definition.base.as_ptr(), definition.current_length())
         }
     }
 
@@ -423,7 +431,7 @@ impl Memory {
     ///
     /// Panics if this memory doesn't belong to `store`.
     pub fn data_ptr(&self, store: impl AsContext) -> *mut u8 {
-        unsafe { (*store.as_context()[self.0].definition).base }
+        unsafe { store.as_context()[self.0].definition.as_ref().base.as_ptr() }
     }
 
     /// Returns the byte length of this memory.
@@ -451,7 +459,7 @@ impl Memory {
     }
 
     pub(crate) fn internal_data_size(&self, store: &StoreOpaque) -> usize {
-        unsafe { (*store[self.0].definition).current_length() }
+        unsafe { store[self.0].definition.as_ref().current_length() }
     }
 
     /// Returns the size, in units of pages, of this Wasm memory.
@@ -580,7 +588,7 @@ impl Memory {
             match (*mem).grow(delta, Some(store))? {
                 Some(size) => {
                     let vm = (*mem).vmmemory();
-                    *store[self.0].definition = vm;
+                    store[self.0].definition.write(vm);
                     let page_size = (*mem).page_size();
                     Ok(u64::try_from(size).unwrap() / page_size)
                 }
@@ -636,8 +644,8 @@ impl Memory {
     pub(crate) fn vmimport(&self, store: &StoreOpaque) -> crate::runtime::vm::VMMemoryImport {
         let export = &store[self.0];
         crate::runtime::vm::VMMemoryImport {
-            from: export.definition,
-            vmctx: export.vmctx,
+            from: export.definition.into(),
+            vmctx: export.vmctx.into(),
             index: export.index,
         }
     }
@@ -651,8 +659,9 @@ impl Memory {
     /// Even if the same underlying memory definition is added to the
     /// `StoreData` multiple times and becomes multiple `wasmtime::Memory`s,
     /// this hash key will be consistent across all of these memories.
-    pub(crate) fn hash_key(&self, store: &StoreOpaque) -> impl core::hash::Hash + Eq {
-        store[self.0].definition as usize
+    #[cfg(feature = "coredump")]
+    pub(crate) fn hash_key(&self, store: &StoreOpaque) -> impl core::hash::Hash + Eq + use<> {
+        store[self.0].definition.as_ptr() as usize
     }
 }
 
@@ -869,8 +878,8 @@ impl SharedMemory {
     /// currently be done unsafely.
     pub fn data(&self) -> &[UnsafeCell<u8>] {
         unsafe {
-            let definition = &*self.vm.vmmemory_ptr();
-            slice::from_raw_parts(definition.base.cast(), definition.current_length())
+            let definition = self.vm.vmmemory_ptr().as_ref();
+            slice::from_raw_parts(definition.base.as_ptr().cast(), definition.current_length())
         }
     }
 
@@ -992,8 +1001,8 @@ impl SharedMemory {
     pub(crate) fn vmimport(&self, store: &mut StoreOpaque) -> crate::runtime::vm::VMMemoryImport {
         let export_memory = generate_memory_export(store, &self.ty(), Some(&self.vm)).unwrap();
         VMMemoryImport {
-            from: export_memory.definition,
-            vmctx: export_memory.vmctx,
+            from: export_memory.definition.into(),
+            vmctx: export_memory.vmctx.into(),
             index: export_memory.index,
         }
     }

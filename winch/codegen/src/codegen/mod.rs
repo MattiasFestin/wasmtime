@@ -3,7 +3,8 @@ use crate::{
     codegen::BlockSig,
     isa::reg::{writable, Reg},
     masm::{
-        ExtendKind, IntCmpKind, MacroAssembler, OperandSize, RegImm, SPOffset, ShiftKind, TrapCode,
+        Extend, Imm, IntCmpKind, LaneSelector, LoadKind, MacroAssembler, OperandSize, RegImm,
+        RmwOp, SPOffset, ShiftKind, StoreKind, TrapCode, Zero, UNTRUSTED_FLAGS,
     },
     stack::TypedReg,
 };
@@ -18,7 +19,7 @@ use wasmparser::{
     BinaryReader, FuncValidator, MemArg, Operator, ValidatorResources, VisitOperator,
     VisitSimdOperator,
 };
-use wasmtime_cranelift::{TRAP_BAD_SIGNATURE, TRAP_TABLE_OUT_OF_BOUNDS};
+use wasmtime_cranelift::{TRAP_BAD_SIGNATURE, TRAP_HEAP_MISALIGNED, TRAP_TABLE_OUT_OF_BOUNDS};
 use wasmtime_environ::{
     GlobalIndex, MemoryIndex, PtrSize, TableIndex, Tunables, TypeIndex, WasmHeapType, WasmValType,
     FUNCREF_MASK,
@@ -54,6 +55,13 @@ pub(crate) struct SourceLocation {
     /// The current relative source code location along with its associated
     /// machine code offset.
     pub current: (CodeOffset, RelSourceLoc),
+}
+
+/// Represents the `memory.atomic.wait*` kind.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum AtomicWaitKind {
+    Wait32,
+    Wait64,
 }
 
 /// The code generation abstraction.
@@ -430,7 +438,7 @@ where
         let ptr_size: OperandSize = self.env.ptr_type().try_into()?;
         let sig_index_bytes = self.env.vmoffsets.size_of_vmshared_type_index();
         let sig_size = OperandSize::from_bytes(sig_index_bytes);
-        let sig_index = self.env.translation.module.types[type_index];
+        let sig_index = self.env.translation.module.types[type_index].unwrap_module_type_index();
         let sig_offset = sig_index
             .as_u32()
             .checked_mul(sig_index_bytes.into())
@@ -523,22 +531,17 @@ where
     }
 
     /// Loads the address of the given global.
-    pub fn emit_get_global_addr(
-        &mut self,
-        index: GlobalIndex,
-    ) -> Result<(WasmValType, M::Address)> {
+    pub fn emit_get_global_addr(&mut self, index: GlobalIndex) -> Result<(WasmValType, Reg, u32)> {
         let data = self.env.resolve_global(index);
 
-        let addr = if data.imported {
+        if data.imported {
             let global_base = self.masm.address_at_reg(vmctx!(M), data.offset)?;
-            let scratch = scratch!(M);
-            self.masm.load_ptr(global_base, writable!(scratch))?;
-            self.masm.address_at_reg(scratch, 0)?
+            let dst = self.context.any_gpr(self.masm)?;
+            self.masm.load_ptr(global_base, writable!(dst))?;
+            Ok((data.ty, dst, 0))
         } else {
-            self.masm.address_at_reg(vmctx!(M), data.offset)?
-        };
-
-        Ok((data.ty, addr))
+            Ok((data.ty, vmctx!(M), data.offset))
+        }
     }
 
     pub fn emit_lazy_init_funcref(&mut self, table_index: TableIndex) -> Result<()> {
@@ -548,7 +551,7 @@ where
         let builtin = self
             .env
             .builtins
-            .table_get_lazy_init_func_ref::<M::ABI, M::Ptr>();
+            .table_get_lazy_init_func_ref::<M::ABI, M::Ptr>()?;
 
         // Request the builtin's  result register and use it to hold the table
         // element value. We preemptively spill and request this register to
@@ -614,8 +617,12 @@ where
         // In the defined case, mask the funcref address in place, by peeking into the
         // last element of the value stack, which was pushed by the `indirect` function
         // call above.
+        //
+        // Note that `FUNCREF_MASK` as type `usize` but here we want a 64-bit
+        // value so assert its actual value and then use a `-2` literal.
         self.masm.bind(defined)?;
-        let imm = RegImm::i64(FUNCREF_MASK as i64);
+        assert_eq!(FUNCREF_MASK as isize, -2);
+        let imm = RegImm::i64(-2);
         let dst = top.into();
         self.masm
             .and(writable!(dst), dst, imm, top.ty.try_into()?)?;
@@ -839,39 +846,115 @@ where
         Ok(addr)
     }
 
+    /// Emit checks to ensure that the address at `memarg` is correctly aligned for `size`.
+    fn emit_check_align(&mut self, memarg: &MemArg, size: OperandSize) -> Result<()> {
+        if size.bytes() > 1 {
+            // Peek addr from top of the stack by popping and pushing.
+            let addr = *self
+                .context
+                .stack
+                .peek()
+                .ok_or_else(|| CodeGenError::missing_values_in_stack())?;
+            let tmp = self.context.any_gpr(self.masm)?;
+            self.context.move_val_to_reg(&addr, tmp, self.masm)?;
+
+            if memarg.offset != 0 {
+                self.masm.add(
+                    writable!(tmp),
+                    tmp,
+                    RegImm::Imm(Imm::I64(memarg.offset)),
+                    size,
+                )?;
+            }
+
+            self.masm.and(
+                writable!(tmp),
+                tmp,
+                RegImm::Imm(Imm::I32(size.bytes() - 1)),
+                size,
+            )?;
+
+            self.masm.cmp(tmp, RegImm::Imm(Imm::i64(0)), size)?;
+            self.masm.trapif(IntCmpKind::Ne, TRAP_HEAP_MISALIGNED)?;
+            self.context.free_reg(tmp);
+        }
+
+        Ok(())
+    }
+
+    pub fn emit_compute_heap_address_align_checked(
+        &mut self,
+        memarg: &MemArg,
+        access_size: OperandSize,
+    ) -> Result<Option<Reg>> {
+        self.emit_check_align(memarg, access_size)?;
+        self.emit_compute_heap_address(memarg, access_size)
+    }
+
     /// Emit a WebAssembly load.
     pub fn emit_wasm_load(
         &mut self,
         arg: &MemArg,
-        ty: WasmValType,
-        size: OperandSize,
-        sextend: Option<ExtendKind>,
+        target_type: WasmValType,
+        kind: LoadKind,
     ) -> Result<()> {
-        let addr = self.emit_compute_heap_address(&arg, size)?;
-        if let Some(addr) = addr {
-            let dst = match ty {
-                WasmValType::I32 | WasmValType::I64 => self.context.any_gpr(self.masm)?,
-                WasmValType::F32 | WasmValType::F64 => self.context.any_fpr(self.masm)?,
-                WasmValType::V128 => self.context.reg_for_type(ty, self.masm)?,
-                _ => bail!(CodeGenError::unsupported_wasm_type()),
-            };
+        let emit_load = |this: &mut Self, dst, addr, kind| -> Result<()> {
+            let src = this.masm.address_at_reg(addr, 0)?;
+            this.masm.wasm_load(src, writable!(dst), kind)?;
+            this.context
+                .stack
+                .push(TypedReg::new(target_type, dst).into());
+            this.context.free_reg(addr);
+            Ok(())
+        };
 
-            let src = self.masm.address_at_reg(addr, 0)?;
-            self.masm.wasm_load(src, writable!(dst), size, sextend)?;
-            self.context.stack.push(TypedReg::new(ty, dst).into());
-            self.context.free_reg(addr);
+        match kind {
+            LoadKind::VectorLane(_) => {
+                let dst = self.context.pop_to_reg(self.masm, None)?;
+                let addr = self.emit_compute_heap_address(&arg, kind.derive_operand_size())?;
+                if let Some(addr) = addr {
+                    emit_load(self, dst.reg, addr, kind)?;
+                }
+            }
+            _ => {
+                let maybe_addr = match kind {
+                    LoadKind::Atomic(_, _) => self.emit_compute_heap_address_align_checked(
+                        &arg,
+                        kind.derive_operand_size(),
+                    )?,
+                    _ => self.emit_compute_heap_address(&arg, kind.derive_operand_size())?,
+                };
+
+                if let Some(addr) = maybe_addr {
+                    let dst = match target_type {
+                        WasmValType::I32 | WasmValType::I64 => self.context.any_gpr(self.masm)?,
+                        WasmValType::F32 | WasmValType::F64 => self.context.any_fpr(self.masm)?,
+                        WasmValType::V128 => self.context.reg_for_type(target_type, self.masm)?,
+                        _ => bail!(CodeGenError::unsupported_wasm_type()),
+                    };
+
+                    emit_load(self, dst, addr, kind)?;
+                }
+            }
         }
 
         Ok(())
     }
 
     /// Emit a WebAssembly store.
-    pub fn emit_wasm_store(&mut self, arg: &MemArg, size: OperandSize) -> Result<()> {
+    pub fn emit_wasm_store(&mut self, arg: &MemArg, kind: StoreKind) -> Result<()> {
         let src = self.context.pop_to_reg(self.masm, None)?;
-        let addr = self.emit_compute_heap_address(&arg, size)?;
-        if let Some(addr) = addr {
+
+        let maybe_addr = match kind {
+            StoreKind::Atomic(size) => self.emit_compute_heap_address_align_checked(&arg, size)?,
+            StoreKind::Operand(size) | StoreKind::VectorLane(LaneSelector { size, .. }) => {
+                self.emit_compute_heap_address(&arg, size)?
+            }
+        };
+
+        if let Some(addr) = maybe_addr {
             self.masm
-                .wasm_store(src.reg.into(), self.masm.address_at_reg(addr, 0)?, size)?;
+                .wasm_store(src.reg.into(), self.masm.address_at_reg(addr, 0)?, kind)?;
 
             self.context.free_reg(addr);
         }
@@ -1010,13 +1093,14 @@ where
 
     /// Checks if fuel consumption is enabled and emits a series of instructions
     /// that check the current fuel usage by performing a zero-comparison with
-    /// the number of units stored in `VMRuntimeLimits`.
+    /// the number of units stored in `VMStoreContext`.
     pub fn maybe_emit_fuel_check(&mut self) -> Result<()> {
         if !self.tunables.consume_fuel {
             return Ok(());
         }
 
-        let out_of_fuel = self.env.builtins.out_of_gas::<M::ABI, M::Ptr>();
+        self.emit_fuel_increment()?;
+        let out_of_fuel = self.env.builtins.out_of_gas::<M::ABI, M::Ptr>()?;
         let fuel_reg = self.context.without::<Result<Reg>, M, _>(
             &out_of_fuel.sig().regs,
             self.masm,
@@ -1057,10 +1141,10 @@ where
     }
 
     /// Emits a series of instructions that load the `fuel_consumed` field from
-    /// `VMRuntimeLimits`.
+    /// `VMStoreContext`.
     fn emit_load_fuel_consumed(&mut self, fuel_reg: Reg) -> Result<()> {
         let limits_offset = self.env.vmoffsets.ptr.vmctx_runtime_limits();
-        let fuel_offset = self.env.vmoffsets.ptr.vmruntime_limits_fuel_consumed();
+        let fuel_offset = self.env.vmoffsets.ptr.vmstore_context_fuel_consumed();
         self.masm.load_ptr(
             self.masm.address_at_vmctx(u32::from(limits_offset))?,
             writable!(fuel_reg),
@@ -1084,7 +1168,7 @@ where
         // The continuation branch if the current epoch hasn't reached the
         // configured deadline.
         let cont = self.masm.get_label()?;
-        let new_epoch = self.env.builtins.new_epoch::<M::ABI, M::Ptr>();
+        let new_epoch = self.env.builtins.new_epoch::<M::ABI, M::Ptr>()?;
 
         // Checks for runtime limits (e.g., fuel, epoch) are special since they
         // require inserting arbitrary function calls and control flow.
@@ -1138,7 +1222,7 @@ where
     ) -> Result<()> {
         let epoch_ptr_offset = self.env.vmoffsets.ptr.vmctx_epoch_ptr();
         let runtime_limits_offset = self.env.vmoffsets.ptr.vmctx_runtime_limits();
-        let epoch_deadline_offset = self.env.vmoffsets.ptr.vmruntime_limits_epoch_deadline();
+        let epoch_deadline_offset = self.env.vmoffsets.ptr.vmstore_context_epoch_deadline();
 
         // Load the current epoch value into `epoch_counter_var`.
         self.masm.load_ptr(
@@ -1154,7 +1238,7 @@ where
             OperandSize::S64,
         )?;
 
-        // Load the `VMRuntimeLimits`.
+        // Load the `VMStoreContext`.
         self.masm.load_ptr(
             self.masm
                 .address_at_vmctx(u32::from(runtime_limits_offset))?,
@@ -1170,7 +1254,7 @@ where
         )
     }
 
-    /// Increments the fuel consumed in `VMRuntimeLimits` by flushing
+    /// Increments the fuel consumed in `VMStoreContext` by flushing
     /// `self.fuel_consumed` to memory.
     fn emit_fuel_increment(&mut self) -> Result<()> {
         let fuel_at_point = std::mem::replace(&mut self.fuel_consumed, 0);
@@ -1179,10 +1263,10 @@ where
         }
 
         let limits_offset = self.env.vmoffsets.ptr.vmctx_runtime_limits();
-        let fuel_offset = self.env.vmoffsets.ptr.vmruntime_limits_fuel_consumed();
+        let fuel_offset = self.env.vmoffsets.ptr.vmstore_context_fuel_consumed();
         let limits_reg = self.context.any_gpr(self.masm)?;
 
-        // Load `VMRuntimeLimits` into the `limits_reg` reg.
+        // Load `VMStoreContext` into the `limits_reg` reg.
         self.masm.load_ptr(
             self.masm.address_at_vmctx(u32::from(limits_offset))?,
             writable!(limits_reg),
@@ -1205,7 +1289,7 @@ where
             OperandSize::S64,
         )?;
 
-        // Store the updated fuel consumed to `VMRuntimeLimits`.
+        // Store the updated fuel consumed to `VMStoreContext`.
         self.masm.store(
             scratch!(M).into(),
             self.masm
@@ -1290,6 +1374,173 @@ where
         if self.masm.current_code_offset()? >= self.source_location.current.0 {
             self.masm.end_source_loc()?;
         }
+
+        Ok(())
+    }
+
+    pub(crate) fn emit_atomic_rmw(
+        &mut self,
+        arg: &MemArg,
+        op: RmwOp,
+        size: OperandSize,
+        extend: Option<Extend<Zero>>,
+    ) -> Result<()> {
+        // We need to pop-push the operand to compute the address before passing control over to
+        // masm, because some architectures may have specific requirements for the registers used
+        // in some atomic operations.
+        let operand = self.context.pop_to_reg(self.masm, None)?;
+        if let Some(addr) = self.emit_compute_heap_address_align_checked(arg, size)? {
+            let src = self.masm.address_at_reg(addr, 0)?;
+            self.context.stack.push(operand.into());
+            self.masm
+                .atomic_rmw(&mut self.context, src, size, op, UNTRUSTED_FLAGS, extend)?;
+            self.context.free_reg(addr);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn emit_atomic_cmpxchg(
+        &mut self,
+        arg: &MemArg,
+        size: OperandSize,
+        extend: Option<Extend<Zero>>,
+    ) -> Result<()> {
+        // Emission for this instruction is a bit trickier. The address for the CAS is the 3rd from
+        // the top of the stack, and we must emit instruction to compute the actual address with
+        // `emit_compute_heap_address_align_checked`, while we still have access to self. However,
+        // some ISAs have requirements with regard to the registers used for some arguments, so we
+        // need to pass the context to the masm. To solve this issue, we pop the two first
+        // arguments from the stack, compute the address, push back the arguments, and hand over
+        // the control to masm. The implementer of `atomic_cas` can expect to find `expected` and
+        // `replacement` at the top the context's stack.
+
+        // pop the args
+        let replacement = self.context.pop_to_reg(self.masm, None)?;
+        let expected = self.context.pop_to_reg(self.masm, None)?;
+
+        if let Some(addr) = self.emit_compute_heap_address_align_checked(arg, size)? {
+            // push back the args
+            self.context.stack.push(expected.into());
+            self.context.stack.push(replacement.into());
+
+            let src = self.masm.address_at_reg(addr, 0)?;
+            self.masm
+                .atomic_cas(&mut self.context, src, size, UNTRUSTED_FLAGS, extend)?;
+
+            self.context.free_reg(addr);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "threads"))]
+    pub fn emit_atomic_wait(&mut self, _arg: &MemArg, _kind: AtomicWaitKind) -> Result<()> {
+        Err(CodeGenError::unimplemented_wasm_instruction().into())
+    }
+
+    /// Emit the sequence of instruction for a `memory.atomic.wait*`.
+    #[cfg(feature = "threads")]
+    pub fn emit_atomic_wait(&mut self, arg: &MemArg, kind: AtomicWaitKind) -> Result<()> {
+        // The `memory_atomic_wait*` builtins expect the following arguments:
+        // - `memory`, as u32
+        // - `address`, as u64
+        // - `expected`, as either u64 or u32
+        // - `timeout`, as u64
+        // At this point our stack only contains the `timeout`, the `expected` and the address, so
+        // we need to:
+        // - insert the memory as the first argument
+        // - compute the actual memory offset from the `MemArg`, if necessary.
+        // Note that the builtin function performs the alignment and bounds checks for us, so we
+        // don't need to emit that.
+
+        let timeout = self.context.pop_to_reg(self.masm, None)?;
+        let expected = self.context.pop_to_reg(self.masm, None)?;
+        let addr = self.context.pop_to_reg(self.masm, None)?;
+
+        // Put the target memory index as the first argument.
+        self.context
+            .stack
+            .push(crate::stack::Val::I32(arg.memory as i32));
+
+        if arg.offset != 0 {
+            self.masm.add(
+                writable!(addr.reg),
+                addr.reg,
+                RegImm::i64(arg.offset as i64),
+                OperandSize::S64,
+            )?;
+        }
+
+        self.context
+            .stack
+            .push(TypedReg::new(WasmValType::I64, addr.reg).into());
+        self.context.stack.push(expected.into());
+        self.context.stack.push(timeout.into());
+
+        let builtin = match kind {
+            AtomicWaitKind::Wait32 => self.env.builtins.memory_atomic_wait32::<M::ABI, M::Ptr>()?,
+            AtomicWaitKind::Wait64 => self.env.builtins.memory_atomic_wait64::<M::ABI, M::Ptr>()?,
+        };
+
+        FnCall::emit::<M>(
+            &mut self.env,
+            self.masm,
+            &mut self.context,
+            Callee::Builtin(builtin.clone()),
+        )?;
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "threads"))]
+    pub fn emit_atomic_notify(&mut self, _arg: &MemArg) -> Result<()> {
+        Err(CodeGenError::unimplemented_wasm_instruction().into())
+    }
+
+    #[cfg(feature = "threads")]
+    pub fn emit_atomic_notify(&mut self, arg: &MemArg) -> Result<()> {
+        // The memory `memory_atomic_notify` builtin expects the following arguments:
+        // - `memory`, as u32
+        // - `address`, as u64
+        // - `count`: as u32
+        // At this point our stack only contains the `count` and the `address`, so we need to:
+        // - insert the memory as the first argument
+        // - compute the actual memory offset from the `MemArg`, if necessary.
+        // Note that the builtin function performs the alignment and bounds checks for us, so we
+        // don't need to emit that.
+
+        // pop the arguments from the stack.
+        let count = self.context.pop_to_reg(self.masm, None)?;
+        let addr = self.context.pop_to_reg(self.masm, None)?;
+
+        // Put the target memory index as the first argument.
+        self.context
+            .stack
+            .push(crate::stack::Val::I32(arg.memory as i32));
+
+        if arg.offset != 0 {
+            self.masm.add(
+                writable!(addr.reg),
+                addr.reg,
+                RegImm::i64(arg.offset as i64),
+                OperandSize::S64,
+            )?;
+        }
+
+        // push remaining arguments.
+        self.context
+            .stack
+            .push(TypedReg::new(WasmValType::I64, addr.reg).into());
+        self.context.stack.push(count.into());
+
+        let builtin = self.env.builtins.memory_atomic_notify::<M::ABI, M::Ptr>()?;
+
+        FnCall::emit::<M>(
+            &mut self.env,
+            self.masm,
+            &mut self.context,
+            Callee::Builtin(builtin.clone()),
+        )?;
 
         Ok(())
     }

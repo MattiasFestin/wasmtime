@@ -57,7 +57,7 @@
 ;;       movl    0x80(%r14), %eax
 ;;       subl    $1, %eax
 ;;       movl    %eax, 0x80(%r14)
-;;       movq    0x68(%r14), %rax
+;;       movq    0x60(%r14), %rax
 ;;       shrl    $0x10, %eax
 ;;       subq    $4, %rsp
 ;;       movl    %eax, (%rsp)
@@ -65,12 +65,12 @@
 ;;       movq    %r14, %rdi
 ;;       movl    0xc(%rsp), %esi
 ;;       movl    $0, %edx
-;;       callq   0x2eb
+;;       callq   0x2de
 ;;       addq    $0xc, %rsp
 ;;       addq    $4, %rsp
 ;;       movq    0x58(%rsp), %r14
 ;;       movl    %eax, %eax
-;;       movq    0x60(%r14), %rcx
+;;       movq    0x58(%r14), %rcx
 ;;       addq    %rax, %rcx
 ;;       addq    $0x23024, %rcx
 ;;       movsbq  (%rcx), %rax

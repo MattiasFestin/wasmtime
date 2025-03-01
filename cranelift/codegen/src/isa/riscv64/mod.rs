@@ -14,6 +14,7 @@ use crate::{ir, CodegenError};
 use alloc::{boxed::Box, vec::Vec};
 use core::fmt;
 use cranelift_control::ControlPlane;
+use std::string::String;
 use target_lexicon::{Architecture, Triple};
 mod abi;
 pub(crate) mod inst;
@@ -191,6 +192,11 @@ impl TargetIsa for Riscv64Backend {
         Ok(cs)
     }
 
+    fn pretty_print_reg(&self, reg: Reg, _size: u8) -> String {
+        // TODO-RISC-V: implement proper register pretty-printing.
+        format!("{reg:?}")
+    }
+
     fn has_native_fma(&self) -> bool {
         true
     }
@@ -209,6 +215,19 @@ impl TargetIsa for Riscv64Backend {
 
     fn has_x86_pmaddubsw_lowering(&self) -> bool {
         false
+    }
+
+    fn default_argument_extension(&self) -> ir::ArgumentExtension {
+        // According to https://riscv.org/wp-content/uploads/2024/12/riscv-calling.pdf
+        // it says:
+        //
+        // > In RV64, 32-bit types, such as int, are stored in integer
+        // > registers as proper sign extensions of their 32-bit values; that
+        // > is, bits 63..31 are all equal. This restriction holds even for
+        // > unsigned 32-bit types.
+        //
+        // leading to `sext` here.
+        ir::ArgumentExtension::Sext
     }
 }
 

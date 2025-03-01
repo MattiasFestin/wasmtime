@@ -308,7 +308,7 @@ impl ModuleTypesBuilder {
     pub fn rec_group_elements(
         &self,
         rec_group: ModuleInternedRecGroupIndex,
-    ) -> impl ExactSizeIterator<Item = ModuleInternedTypeIndex> {
+    ) -> impl ExactSizeIterator<Item = ModuleInternedTypeIndex> + use<> {
         self.types.rec_group_elements(rec_group)
     }
 
@@ -438,6 +438,7 @@ where
                         WasmCompositeInnerType::Array(_) => WasmHeapType::ConcreteArray(index),
                         WasmCompositeInnerType::Func(_) => WasmHeapType::ConcreteFunc(index),
                         WasmCompositeInnerType::Struct(_) => WasmHeapType::ConcreteStruct(index),
+                        WasmCompositeInnerType::Cont(_) => WasmHeapType::ConcreteCont(index),
                     }
                 } else if let Some((wasmparser_types, _)) = self.rec_group_context.as_ref() {
                     let wasmparser_ty = &wasmparser_types[id].composite_type;
@@ -453,7 +454,7 @@ where
                             WasmHeapType::ConcreteStruct(index)
                         }
                         wasmparser::CompositeInnerType::Cont(_) => {
-                            panic!("unimplemented continuation types")
+                            WasmHeapType::ConcreteCont(index)
                         }
                     }
                 } else {
@@ -477,6 +478,7 @@ where
                         WasmCompositeInnerType::Array(_) => WasmHeapType::ConcreteArray(index),
                         WasmCompositeInnerType::Func(_) => WasmHeapType::ConcreteFunc(index),
                         WasmCompositeInnerType::Struct(_) => WasmHeapType::ConcreteStruct(index),
+                        WasmCompositeInnerType::Cont(_) => WasmHeapType::ConcreteCont(index),
                     }
                 } else if let Some((parser_types, rec_group)) = self.rec_group_context.as_ref() {
                     let rec_group_index = interned.index() - self.types.types.len_types();
@@ -497,7 +499,7 @@ where
                             WasmHeapType::ConcreteStruct(index)
                         }
                         wasmparser::CompositeInnerType::Cont(_) => {
-                            panic!("unimplemented continuation types")
+                            WasmHeapType::ConcreteCont(index)
                         }
                     }
                 } else {

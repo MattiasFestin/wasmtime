@@ -1213,7 +1213,7 @@ impl Inst {
                 ALUOp::AndNot => "bic",
                 ALUOp::OrrNot => "orn",
                 ALUOp::EorNot => "eon",
-                ALUOp::RotR => "ror",
+                ALUOp::Extr => "extr",
                 ALUOp::Lsr => "lsr",
                 ALUOp::Asr => "asr",
                 ALUOp::Lsl => "lsl",
@@ -3051,6 +3051,11 @@ mod tests {
     fn inst_size_test() {
         // This test will help with unintentionally growing the size
         // of the Inst enum.
-        assert_eq!(32, std::mem::size_of::<Inst>());
+        let expected = if cfg!(target_pointer_width = "32") && !cfg!(target_arch = "arm") {
+            28
+        } else {
+            32
+        };
+        assert_eq!(expected, std::mem::size_of::<Inst>());
     }
 }

@@ -46,7 +46,6 @@
 use crate::dominator_tree::DominatorTree;
 pub use crate::isa::call_conv::CallConv;
 
-use crate::flowgraph;
 use crate::ir::{self, Function, Type};
 #[cfg(feature = "unwind")]
 use crate::isa::unwind::{systemv::RegisterMappingError, UnwindInfoKind};
@@ -55,10 +54,12 @@ use crate::settings;
 use crate::settings::Configurable;
 use crate::settings::SetResult;
 use crate::CodegenResult;
+use crate::{flowgraph, Reg};
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::fmt;
 use core::fmt::{Debug, Formatter};
 use cranelift_control::ControlPlane;
+use std::string::String;
 use target_lexicon::{triple, Architecture, PointerWidth, Triple};
 
 // This module is made public here for benchmarking purposes. No guarantees are
@@ -211,7 +212,7 @@ impl<T> IsaBuilder<T> {
     }
 
     /// Iterates the available settings in the builder.
-    pub fn iter(&self) -> impl Iterator<Item = settings::Setting> {
+    pub fn iter(&self) -> impl Iterator<Item = settings::Setting> + use<T> {
         self.setup.iter()
     }
 
@@ -373,6 +374,10 @@ pub trait TargetIsa: fmt::Display + Send + Sync {
         Err(capstone::Error::UnsupportedArch)
     }
 
+    /// Return the string representation of "reg" accessed as "size" bytes.
+    /// The returned string will match the usual disassemly view of "reg".
+    fn pretty_print_reg(&self, reg: Reg, size: u8) -> String;
+
     /// Returns whether this ISA has a native fused-multiply-and-add instruction
     /// for floats.
     ///
@@ -395,6 +400,16 @@ pub trait TargetIsa: fmt::Display + Send + Sync {
     /// Returns whether the CLIF `x86_pmaddubsw` instruction is implemented for
     /// this ISA.
     fn has_x86_pmaddubsw_lowering(&self) -> bool;
+
+    /// Returns the mode of extension used for integer arguments smaller than
+    /// the pointer width in function signatures.
+    ///
+    /// Some platform ABIs require that smaller-than-pointer-width values are
+    /// either zero or sign-extended to the full register width. This value is
+    /// propagated to the `AbiParam` value created for signatures. Note that not
+    /// all ABIs for all platforms require extension of any form, so this is
+    /// generally only necessary for the `default_call_conv`.
+    fn default_argument_extension(&self) -> ir::ArgumentExtension;
 }
 
 /// Function alignment specifications as required by an ISA, returned by

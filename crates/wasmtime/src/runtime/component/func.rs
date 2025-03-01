@@ -470,10 +470,11 @@ impl Func {
             crate::Func::call_unchecked_raw(
                 store,
                 export.func_ref,
-                core::ptr::slice_from_raw_parts_mut(
+                NonNull::new(core::ptr::slice_from_raw_parts_mut(
                     space.as_mut_ptr().cast(),
                     mem::size_of_val(space) / mem::size_of::<ValRaw>(),
-                ),
+                ))
+                .unwrap(),
             )?;
 
             // Note that `.assume_init_ref()` here is unsafe but we're relying
@@ -622,7 +623,8 @@ impl Func {
                 crate::Func::call_unchecked_raw(
                     &mut store,
                     func.func_ref,
-                    core::ptr::slice_from_raw_parts(&post_return_arg, 1).cast_mut(),
+                    NonNull::new(core::ptr::slice_from_raw_parts(&post_return_arg, 1).cast_mut())
+                        .unwrap(),
                 )?;
             }
 
@@ -668,7 +670,7 @@ impl Func {
         results: &mut [Val],
         src: &mut core::slice::Iter<'_, ValRaw>,
     ) -> Result<()> {
-        // FIXME: needs to read an i64 for memory64
+        // FIXME(#4311): needs to read an i64 for memory64
         let ptr = usize::try_from(src.next().unwrap().get_u32())?;
         if ptr % usize::try_from(results_ty.abi.align32)? != 0 {
             bail!("return pointer not aligned");

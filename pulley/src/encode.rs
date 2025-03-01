@@ -191,14 +191,60 @@ impl<D: Reg, S1: Reg> Encode for BinaryOperands<D, S1, U6> {
     }
 }
 
-impl<R: Reg + Encode> Encode for RegSet<R> {
-    const WIDTH: u8 = 4;
+impl<R: Reg + Encode> Encode for UpperRegSet<R> {
+    const WIDTH: u8 = 2;
 
     fn encode<E>(&self, sink: &mut E)
     where
         E: Extend<u8>,
     {
         self.to_bitset().0.encode(sink);
+    }
+}
+
+impl Encode for AddrO32 {
+    const WIDTH: u8 = 5;
+
+    fn encode<E>(&self, sink: &mut E)
+    where
+        E: Extend<u8>,
+    {
+        self.addr.encode(sink);
+        self.offset.encode(sink);
+    }
+}
+
+impl Encode for AddrZ {
+    const WIDTH: u8 = 5;
+
+    fn encode<E>(&self, sink: &mut E)
+    where
+        E: Extend<u8>,
+    {
+        self.addr.encode(sink);
+        self.offset.encode(sink);
+    }
+}
+
+impl Encode for AddrG32 {
+    const WIDTH: u8 = 4;
+
+    fn encode<E>(&self, sink: &mut E)
+    where
+        E: Extend<u8>,
+    {
+        self.to_bits().encode(sink);
+    }
+}
+
+impl Encode for AddrG32Bne {
+    const WIDTH: u8 = 4;
+
+    fn encode<E>(&self, sink: &mut E)
+    where
+        E: Extend<u8>,
+    {
+        self.to_bits().encode(sink);
     }
 }
 

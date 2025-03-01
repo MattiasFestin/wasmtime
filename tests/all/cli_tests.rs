@@ -62,8 +62,9 @@ pub fn run_wasmtime(args: &[&str]) -> Result<String> {
     let output = run_wasmtime_for_output(args, None)?;
     if !output.status.success() {
         bail!(
-            "Failed to execute wasmtime with: {:?}\n{}",
+            "Failed to execute wasmtime with: {:?}\nstatus: {}\n{}",
             args,
+            output.status,
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -574,6 +575,10 @@ fn run_cwasm_from_stdin() -> Result<()> {
 #[cfg(feature = "wasi-threads")]
 #[test]
 fn run_threads() -> Result<()> {
+    // Skip this test on platforms that don't support threads.
+    if crate::threads::engine().is_none() {
+        return Ok(());
+    }
     let wasm = build_wasm("tests/all/cli_tests/threads.wat")?;
     let stdout = run_wasmtime(&[
         "run",
@@ -597,6 +602,10 @@ fn run_threads() -> Result<()> {
 #[cfg(feature = "wasi-threads")]
 #[test]
 fn run_simple_with_wasi_threads() -> Result<()> {
+    // Skip this test on platforms that don't support threads.
+    if crate::threads::engine().is_none() {
+        return Ok(());
+    }
     // We expect to be able to run Wasm modules that do not have correct
     // wasi-thread entry points or imported shared memory as long as no threads
     // are spawned.
@@ -919,10 +928,12 @@ fn table_growth_failure2() -> Result<()> {
         .output()?;
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("forcing trap when growing table to 4294967296 elements"),
-        "bad stderr: {stderr}"
-    );
+    let expected = if cfg!(target_pointer_width = "32") {
+        "overflow calculating new table size"
+    } else {
+        "forcing trap when growing table to 4294967296 elements"
+    };
+    assert!(stderr.contains(expected), "bad stderr: {stderr}");
     Ok(())
 }
 
@@ -2059,10 +2070,26 @@ after empty
         ])?;
         Ok(())
     }
+
+    #[test]
+    fn cli_multiple_preopens() -> Result<()> {
+        run_wasmtime(&[
+            "run",
+            "--dir=/::/a",
+            "--dir=/::/b",
+            "--dir=/::/c",
+            CLI_MULTIPLE_PREOPENS_COMPONENT,
+        ])?;
+        Ok(())
+    }
 }
 
 #[test]
 fn settings_command() -> Result<()> {
+    // Skip this test on platforms that Cranelift doesn't support.
+    if cranelift_native::builder().is_err() {
+        return Ok(());
+    }
     let output = run_wasmtime(&["settings"])?;
     assert!(output.contains("Cranelift settings for target"));
     Ok(())
@@ -2122,5 +2149,118 @@ fn unreachable_without_wasi() -> Result<()> {
     assert_ne!(output.stderr, b"");
     assert_eq!(output.stdout, b"");
     assert_trap_code(&output.status);
+    Ok(())
+}
+
+#[test]
+fn config_cli_flag() -> Result<()> {
+    let wasm = build_wasm("tests/all/cli_tests/simple.wat")?;
+
+    // Test some valid TOML values
+    let (mut cfg, cfg_path) = tempfile::NamedTempFile::new()?.into_parts();
+    cfg.write_all(
+        br#"
+        [optimize]
+        opt-level = 2
+        regalloc-algorithm = "single-pass"
+        signals-based-traps = false
+
+        [codegen]
+        collector = "null"
+
+        [debug]
+        debug-info = true
+
+        [wasm]
+        max-wasm-stack = 65536
+
+        [wasi]
+        cli = true
+        "#,
+    )?;
+    let output = run_wasmtime(&[
+        "run",
+        "--config",
+        cfg_path.to_str().unwrap(),
+        "--invoke",
+        "get_f64",
+        wasm.path().to_str().unwrap(),
+    ])?;
+    assert_eq!(output, "100\n");
+
+    // Make sure CLI flags overrides TOML values
+    let output = run_wasmtime(&[
+        "run",
+        "--config",
+        cfg_path.to_str().unwrap(),
+        "--invoke",
+        "get_f64",
+        "-W",
+        "max-wasm-stack=0", // should override TOML value 65536 specified above and execution should fail
+        wasm.path().to_str().unwrap(),
+    ]);
+    assert!(
+        output
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("max_wasm_stack size cannot be zero"),
+        "'{output:?}' did not contain expected error message",
+    );
+
+    // Test invalid TOML key
+    let (mut cfg, cfg_path) = tempfile::NamedTempFile::new()?.into_parts();
+    cfg.write_all(
+        br#"
+        [optimize]
+        this-key-does-not-exist = true
+        "#,
+    )?;
+    let output = run_wasmtime(&[
+        "run",
+        "--config",
+        cfg_path.to_str().unwrap(),
+        wasm.path().to_str().unwrap(),
+    ]);
+    assert!(
+        output
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field `this-key-does-not-exist`"),
+        "'{output:?}' did not contain expected error message"
+    );
+
+    // Test invalid TOML table
+    let (mut cfg, cfg_path) = tempfile::NamedTempFile::new()?.into_parts();
+    cfg.write_all(
+        br#"
+        [invalid_table]
+        "#,
+    )?;
+    let output = run_wasmtime(&[
+        "run",
+        "--config",
+        cfg_path.to_str().unwrap(),
+        wasm.path().to_str().unwrap(),
+    ]);
+    assert!(
+        output
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field `invalid_table`, expected one of `optimize`, `codegen`, `debug`, `wasm`, `wasi`"),
+        "'{output:?}' did not contain expected error message",
+    );
+
+    Ok(())
+}
+
+#[test]
+fn invalid_subcommand() -> Result<()> {
+    let output = run_wasmtime_for_output(&["invalid-subcommand"], None)?;
+    dbg!(&output);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid-subcommand"));
     Ok(())
 }

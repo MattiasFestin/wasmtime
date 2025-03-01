@@ -113,7 +113,7 @@ impl Val {
             }
             InterfaceType::String => Val::String(<_>::lift(cx, ty, &[*next(src), *next(src)])?),
             InterfaceType::List(i) => {
-                // FIXME: needs memory64 treatment
+                // FIXME(#4311): needs memory64 treatment
                 let ptr = u32::lift(cx, InterfaceType::U32, next(src))? as usize;
                 let len = u32::lift(cx, InterfaceType::U32, next(src))? as usize;
                 load_list(cx, i, ptr, len)?
@@ -198,6 +198,9 @@ impl Val {
 
                 Val::Flags(flags.into())
             }
+            InterfaceType::Future(_)
+            | InterfaceType::Stream(_)
+            | InterfaceType::ErrorContext(_) => todo!(),
         })
     }
 
@@ -221,7 +224,7 @@ impl Val {
                 Val::Resource(ResourceAny::load(cx, ty, bytes)?)
             }
             InterfaceType::List(i) => {
-                // FIXME: needs memory64 treatment
+                // FIXME(#4311): needs memory64 treatment
                 let ptr = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
                 let len = u32::from_le_bytes(bytes[4..].try_into().unwrap()) as usize;
                 load_list(cx, i, ptr, len)?
@@ -319,6 +322,9 @@ impl Val {
                 }
                 Val::Flags(flags.into())
             }
+            InterfaceType::Future(_)
+            | InterfaceType::Stream(_)
+            | InterfaceType::ErrorContext(_) => todo!(),
         })
     }
 
@@ -429,6 +435,9 @@ impl Val {
                 Ok(())
             }
             (InterfaceType::Flags(_), _) => unexpected(ty, self),
+            (InterfaceType::Future(_), _)
+            | (InterfaceType::Stream(_), _)
+            | (InterfaceType::ErrorContext(_), _) => todo!(),
         }
     }
 
@@ -477,7 +486,7 @@ impl Val {
             (InterfaceType::List(ty), Val::List(values)) => {
                 let ty = &cx.types[ty];
                 let (ptr, len) = lower_list(cx, ty.element, values)?;
-                // FIXME: needs memory64 handling
+                // FIXME(#4311): needs memory64 handling
                 *cx.get(offset + 0) = u32::try_from(ptr).unwrap().to_le_bytes();
                 *cx.get(offset + 4) = u32::try_from(len).unwrap().to_le_bytes();
                 Ok(())
@@ -564,6 +573,9 @@ impl Val {
                 Ok(())
             }
             (InterfaceType::Flags(_), _) => unexpected(ty, self),
+            (InterfaceType::Future(_), _)
+            | (InterfaceType::Stream(_), _)
+            | (InterfaceType::ErrorContext(_), _) => todo!(),
         }
     }
 
@@ -595,7 +607,7 @@ impl Val {
     }
 
     /// Deserialize a [`Val`] from its [`crate::component::wasm_wave`] encoding. Deserialization
-    /// requrires a target [`crate::component::Type`].
+    /// requires a target [`crate::component::Type`].
     #[cfg(feature = "wave")]
     pub fn from_wave(ty: &crate::component::Type, s: &str) -> Result<Self> {
         Ok(wasm_wave::from_str(ty, s)?)

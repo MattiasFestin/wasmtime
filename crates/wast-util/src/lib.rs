@@ -184,7 +184,7 @@ macro_rules! foreach_config_option {
             wide_arithmetic
             hogs_memory
             nan_canonicalization
-            component_model_more_flags
+            component_model_async
             simd
             gc_types
         }
@@ -286,7 +286,6 @@ impl Compiler {
             // Cranelift has quite yet.
             Compiler::Winch => {
                 if config.gc()
-                    || config.threads()
                     || config.tail_call()
                     || config.function_references()
                     || config.gc()
@@ -302,13 +301,6 @@ impl Compiler {
                 // due to being unable to implement non-atomic loads/stores
                 // safely.
                 if config.threads() {
-                    return true;
-                }
-                // Unsupported proposals. Note that other proposals have partial
-                // support at this time (pulley is a work-in-progress) and so
-                // individual tests are listed below as "should fail" even if
-                // they're not covered in this list.
-                if config.wide_arithmetic() {
                     return true;
                 }
             }
@@ -392,38 +384,6 @@ impl WastTest {
             return true;
         }
 
-        // Pulley supports a mishmash of proposals at this time as it's in an
-        // interim state. It doesn't support all of the MVP but it supports
-        // enough to pass some GC tests for example. This means that
-        // `Compiler::should_fail` is pretty liberal (the check above). To
-        // handle this there's an extra check here for an exhaustive list of
-        // unsupported tests on Pulley. This list will get burned down as
-        // features in Pulley are implemented.
-        if config.compiler == Compiler::CraneliftPulley {
-            let unsupported = [
-                "misc_testsuite/simd/canonicalize-nan.wast",
-                "misc_testsuite/simd/issue_3327_bnot_lowering.wast",
-                "misc_testsuite/simd/v128-select.wast",
-                "spec_testsuite/proposals/relaxed-simd/i32x4_relaxed_trunc.wast",
-                "spec_testsuite/proposals/relaxed-simd/relaxed_madd_nmadd.wast",
-                "spec_testsuite/proposals/memory64/relaxed_madd_nmadd.wast",
-                "spec_testsuite/proposals/memory64/i32x4_relaxed_trunc.wast",
-                "spec_testsuite/simd_f32x4_arith.wast",
-                "spec_testsuite/simd_f32x4_cmp.wast",
-                "spec_testsuite/simd_f32x4_pmin_pmax.wast",
-                "spec_testsuite/simd_f64x2_cmp.wast",
-                "spec_testsuite/simd_f64x2_pmin_pmax.wast",
-                "spec_testsuite/simd_i32x4_trunc_sat_f32x4.wast",
-                "spec_testsuite/simd_i32x4_trunc_sat_f64x2.wast",
-                "spec_testsuite/simd_load.wast",
-                "spec_testsuite/simd_splat.wast",
-            ];
-
-            if unsupported.iter().any(|part| self.path.ends_with(part)) {
-                return true;
-            }
-        }
-
         // Disable spec tests for proposals that Winch does not implement yet.
         if config.compiler == Compiler::Winch {
             let unsupported = [
@@ -431,7 +391,6 @@ impl WastTest {
                 "component-model/modules.wast",
                 "extended-const/elem.wast",
                 "extended-const/global.wast",
-                "memory64/threads.wast",
                 "misc_testsuite/externref-id-function.wast",
                 "misc_testsuite/externref-segment.wast",
                 "misc_testsuite/externref-segments.wast",
@@ -458,79 +417,90 @@ impl WastTest {
                 "spec_testsuite/table_set.wast",
                 "spec_testsuite/table_size.wast",
                 // simd-related failures
-                "annotations/simd_lane.wast",
-                "memory64/simd.wast",
-                "misc_testsuite/int-to-float-splat.wast",
-                "misc_testsuite/issue6562.wast",
-                "misc_testsuite/simd/almost-extmul.wast",
                 "misc_testsuite/simd/canonicalize-nan.wast",
-                "misc_testsuite/simd/cvt-from-uint.wast",
-                "misc_testsuite/simd/issue4807.wast",
-                "misc_testsuite/simd/issue6725-no-egraph-panic.wast",
-                "misc_testsuite/simd/issue_3327_bnot_lowering.wast",
-                "misc_testsuite/simd/load_splat_out_of_bounds.wast",
-                "misc_testsuite/simd/replace-lane-preserve.wast",
-                "misc_testsuite/simd/spillslot-size-fuzzbug.wast",
-                "misc_testsuite/simd/unaligned-load.wast",
-                "multi-memory/simd_memory-multi.wast",
-                "spec_testsuite/simd_align.wast",
-                "spec_testsuite/simd_bit_shift.wast",
-                "spec_testsuite/simd_bitwise.wast",
-                "spec_testsuite/simd_boolean.wast",
-                "spec_testsuite/simd_const.wast",
-                "spec_testsuite/simd_conversions.wast",
-                "spec_testsuite/simd_f32x4.wast",
-                "spec_testsuite/simd_f32x4_arith.wast",
-                "spec_testsuite/simd_f32x4_cmp.wast",
-                "spec_testsuite/simd_f32x4_pmin_pmax.wast",
-                "spec_testsuite/simd_f32x4_rounding.wast",
-                "spec_testsuite/simd_f64x2.wast",
-                "spec_testsuite/simd_f64x2_arith.wast",
-                "spec_testsuite/simd_f64x2_cmp.wast",
-                "spec_testsuite/simd_f64x2_pmin_pmax.wast",
-                "spec_testsuite/simd_f64x2_rounding.wast",
-                "spec_testsuite/simd_i16x8_arith.wast",
-                "spec_testsuite/simd_i16x8_arith2.wast",
-                "spec_testsuite/simd_i16x8_cmp.wast",
-                "spec_testsuite/simd_i16x8_extadd_pairwise_i8x16.wast",
-                "spec_testsuite/simd_i16x8_extmul_i8x16.wast",
-                "spec_testsuite/simd_i16x8_q15mulr_sat_s.wast",
-                "spec_testsuite/simd_i16x8_sat_arith.wast",
-                "spec_testsuite/simd_i32x4_arith.wast",
-                "spec_testsuite/simd_i32x4_arith2.wast",
-                "spec_testsuite/simd_i32x4_cmp.wast",
-                "spec_testsuite/simd_i32x4_dot_i16x8.wast",
-                "spec_testsuite/simd_i32x4_extadd_pairwise_i16x8.wast",
-                "spec_testsuite/simd_i32x4_extmul_i16x8.wast",
-                "spec_testsuite/simd_i32x4_trunc_sat_f32x4.wast",
-                "spec_testsuite/simd_i32x4_trunc_sat_f64x2.wast",
-                "spec_testsuite/simd_i64x2_arith.wast",
-                "spec_testsuite/simd_i64x2_arith2.wast",
-                "spec_testsuite/simd_i64x2_cmp.wast",
-                "spec_testsuite/simd_i64x2_extmul_i32x4.wast",
-                "spec_testsuite/simd_i8x16_arith.wast",
-                "spec_testsuite/simd_i8x16_arith2.wast",
-                "spec_testsuite/simd_i8x16_cmp.wast",
-                "spec_testsuite/simd_i8x16_sat_arith.wast",
-                "spec_testsuite/simd_int_to_int_extend.wast",
-                "spec_testsuite/simd_lane.wast",
-                "spec_testsuite/simd_load.wast",
-                "spec_testsuite/simd_load16_lane.wast",
-                "spec_testsuite/simd_load32_lane.wast",
-                "spec_testsuite/simd_load64_lane.wast",
-                "spec_testsuite/simd_load8_lane.wast",
-                "spec_testsuite/simd_load_extend.wast",
-                "spec_testsuite/simd_load_splat.wast",
-                "spec_testsuite/simd_load_zero.wast",
-                "spec_testsuite/simd_splat.wast",
-                "spec_testsuite/simd_store16_lane.wast",
-                "spec_testsuite/simd_store32_lane.wast",
-                "spec_testsuite/simd_store64_lane.wast",
-                "spec_testsuite/simd_store8_lane.wast",
             ];
 
             if unsupported.iter().any(|part| self.path.ends_with(part)) {
                 return true;
+            }
+
+            // SIMD on Winch requires AVX instructions.
+            #[cfg(target_arch = "x86_64")]
+            if !(std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("avx2")) {
+                let unsupported = [
+                    "annotations/simd_lane.wast",
+                    "memory64/simd.wast",
+                    "misc_testsuite/int-to-float-splat.wast",
+                    "misc_testsuite/issue6562.wast",
+                    "misc_testsuite/simd/almost-extmul.wast",
+                    "misc_testsuite/simd/cvt-from-uint.wast",
+                    "misc_testsuite/simd/issue_3327_bnot_lowering.wast",
+                    "misc_testsuite/simd/issue6725-no-egraph-panic.wast",
+                    "misc_testsuite/simd/replace-lane-preserve.wast",
+                    "misc_testsuite/simd/spillslot-size-fuzzbug.wast",
+                    "spec_testsuite/simd_align.wast",
+                    "spec_testsuite/simd_boolean.wast",
+                    "spec_testsuite/simd_conversions.wast",
+                    "spec_testsuite/simd_f32x4.wast",
+                    "spec_testsuite/simd_f32x4_arith.wast",
+                    "spec_testsuite/simd_f32x4_cmp.wast",
+                    "spec_testsuite/simd_f32x4_pmin_pmax.wast",
+                    "spec_testsuite/simd_f32x4_rounding.wast",
+                    "spec_testsuite/simd_f64x2.wast",
+                    "spec_testsuite/simd_f64x2_arith.wast",
+                    "spec_testsuite/simd_f64x2_cmp.wast",
+                    "spec_testsuite/simd_f64x2_pmin_pmax.wast",
+                    "spec_testsuite/simd_f64x2_rounding.wast",
+                    "spec_testsuite/simd_i16x8_cmp.wast",
+                    "spec_testsuite/simd_i32x4_cmp.wast",
+                    "spec_testsuite/simd_i64x2_arith2.wast",
+                    "spec_testsuite/simd_i64x2_cmp.wast",
+                    "spec_testsuite/simd_i8x16_arith2.wast",
+                    "spec_testsuite/simd_i8x16_cmp.wast",
+                    "spec_testsuite/simd_int_to_int_extend.wast",
+                    "spec_testsuite/simd_load.wast",
+                    "spec_testsuite/simd_load_extend.wast",
+                    "spec_testsuite/simd_load_splat.wast",
+                    "spec_testsuite/simd_load_zero.wast",
+                    "spec_testsuite/simd_splat.wast",
+                    "spec_testsuite/simd_store16_lane.wast",
+                    "spec_testsuite/simd_store32_lane.wast",
+                    "spec_testsuite/simd_store64_lane.wast",
+                    "spec_testsuite/simd_store8_lane.wast",
+                    "spec_testsuite/simd_load16_lane.wast",
+                    "spec_testsuite/simd_load32_lane.wast",
+                    "spec_testsuite/simd_load64_lane.wast",
+                    "spec_testsuite/simd_load8_lane.wast",
+                    "spec_testsuite/simd_bitwise.wast",
+                    "misc_testsuite/simd/load_splat_out_of_bounds.wast",
+                    "misc_testsuite/simd/unaligned-load.wast",
+                    "multi-memory/simd_memory-multi.wast",
+                    "misc_testsuite/simd/issue4807.wast",
+                    "spec_testsuite/simd_const.wast",
+                    "spec_testsuite/simd_i8x16_sat_arith.wast",
+                    "spec_testsuite/simd_i64x2_arith.wast",
+                    "spec_testsuite/simd_i16x8_arith.wast",
+                    "spec_testsuite/simd_i16x8_arith2.wast",
+                    "spec_testsuite/simd_i16x8_q15mulr_sat_s.wast",
+                    "spec_testsuite/simd_i16x8_sat_arith.wast",
+                    "spec_testsuite/simd_i32x4_arith.wast",
+                    "spec_testsuite/simd_i32x4_dot_i16x8.wast",
+                    "spec_testsuite/simd_i32x4_trunc_sat_f32x4.wast",
+                    "spec_testsuite/simd_i32x4_trunc_sat_f64x2.wast",
+                    "spec_testsuite/simd_i8x16_arith.wast",
+                    "spec_testsuite/simd_bit_shift.wast",
+                    "spec_testsuite/simd_lane.wast",
+                    "spec_testsuite/simd_i16x8_extmul_i8x16.wast",
+                    "spec_testsuite/simd_i32x4_extmul_i16x8.wast",
+                    "spec_testsuite/simd_i64x2_extmul_i32x4.wast",
+                    "spec_testsuite/simd_i16x8_extadd_pairwise_i8x16.wast",
+                    "spec_testsuite/simd_i32x4_extadd_pairwise_i16x8.wast",
+                    "spec_testsuite/simd_i32x4_arith2.wast",
+                ];
+
+                if unsupported.iter().any(|part| self.path.ends_with(part)) {
+                    return true;
+                }
             }
         }
 

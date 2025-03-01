@@ -62,10 +62,14 @@ fn align_ptr(ptr: *mut u8, len: usize, align: usize) -> (*mut u8, usize) {
 }
 
 impl FiberStack {
-    pub fn new(size: usize) -> Result<Self> {
+    pub fn new(size: usize, zeroed: bool) -> Result<Self> {
         // Round up the size to at least one page.
         let size = core::cmp::max(4096, size);
-        let mut storage = vec![0; size];
+        let mut storage = Vec::new();
+        storage.reserve_exact(size);
+        if zeroed {
+            storage.resize(size, 0);
+        }
         let (base, len) = align_ptr(storage.as_mut_ptr(), size, STACK_ALIGN);
         Ok(FiberStack {
             storage,
@@ -126,6 +130,11 @@ impl Fiber {
     where
         F: FnOnce(A, &mut super::Suspend<A, B, C>) -> C,
     {
+        // On unsupported platforms `wasmtime_fiber_init` is a panicking shim so
+        // return an error saying the host architecture isn't supported instead.
+        if !SUPPORTED_ARCH {
+            anyhow::bail!("fibers unsupported on this host architecture");
+        }
         unsafe {
             let data = Box::into_raw(Box::new(func)).cast();
             wasmtime_fiber_init(stack.top().unwrap(), fiber_start::<F, A, B, C>, data);
@@ -143,6 +152,7 @@ impl Fiber {
             let addr = stack.top().unwrap().cast::<usize>().offset(-1);
             addr.write(result as *const _ as usize);
 
+            assert!(SUPPORTED_ARCH);
             wasmtime_fiber_switch(stack.top().unwrap());
 
             // null this out to help catch use-after-free

@@ -24,27 +24,27 @@
 ;;     gv1 = load.i64 notrap aligned readonly gv0+8
 ;;     gv2 = load.i64 notrap aligned gv1+16
 ;;     gv3 = vmctx
-;;     gv4 = load.i64 notrap aligned gv3+104
-;;     gv5 = load.i64 notrap aligned readonly checked gv3+96
+;;     gv4 = load.i64 notrap aligned gv3+96
+;;     gv5 = load.i64 notrap aligned readonly checked gv3+88
 ;;     stack_limit = gv2
 ;;
 ;;                                 block0(v0: i64, v1: i64, v2: i32, v3: i32):
 ;; @0049                               v5 = f64const 0x1.0000000000000p0
-;; @0056                               brif v3, block2, block4(v2)
+;; @0056                               brif v3, block2, block4
 ;;
 ;;                                 block2:
 ;; @0058                               v7 = uextend.i64 v2
-;; @0058                               v8 = global_value.i64 gv5
+;; @0058                               v8 = load.i64 notrap aligned readonly checked v0+88
 ;; @0058                               v9 = iadd v8, v7
 ;; @0058                               v10 = sload16.i64 little heap v9
 ;; @005c                               jump block3
 ;;
-;;                                 block4(v6: i32):
+;;                                 block4:
 ;; @005d                               trap user11
 ;;
 ;;                                 block3:
-;; @005f                               jump block1(v5)  ; v5 = 0x1.0000000000000p0
+;; @005f                               jump block1
 ;;
-;;                                 block1(v4: f64):
-;; @005f                               return v4
+;;                                 block1:
+;; @005f                               return v5  ; v5 = 0x1.0000000000000p0
 ;; }

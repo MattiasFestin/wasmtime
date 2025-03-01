@@ -60,7 +60,11 @@ enum FiberStackStorage {
 }
 
 impl FiberStack {
-    pub fn new(size: usize) -> io::Result<Self> {
+    pub fn new(size: usize, zeroed: bool) -> io::Result<Self> {
+        // The anonymous `mmap`s we use for `FiberStackStorage` are alawys
+        // zeroed.
+        let _ = zeroed;
+
         // See comments in `mod asan` below for why asan has a different stack
         // allocation strategy.
         if cfg!(asan) {
@@ -219,6 +223,14 @@ impl Fiber {
     where
         F: FnOnce(A, &mut super::Suspend<A, B, C>) -> C,
     {
+        // On unsupported platforms `wasmtime_fiber_init` is a panicking shim so
+        // return an error saying the host architecture isn't supported instead.
+        if !SUPPORTED_ARCH {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "fibers not supported on this host architecture",
+            ));
+        }
         unsafe {
             let data = Box::into_raw(Box::new(func)).cast();
             wasmtime_fiber_init(stack.top().unwrap(), fiber_start::<F, A, B, C>, data);
@@ -340,6 +352,7 @@ mod asan {
         is_finishing: bool,
         prev: &mut PreviousStack,
     ) {
+        assert!(super::SUPPORTED_ARCH);
         let mut private_asan_pointer = std::ptr::null_mut();
 
         // If this fiber is finishing then NULL is passed to asan to let it know
@@ -371,7 +384,7 @@ mod asan {
 
     // These intrinsics are provided by the address sanitizer runtime. Their C
     // signatures were translated into Rust-isms here with `Option` and `&mut`.
-    extern "C" {
+    unsafe extern "C" {
         fn __sanitizer_start_switch_fiber(
             private_asan_pointer_save: Option<&mut *mut u8>,
             bottom: *const u8,
@@ -471,6 +484,7 @@ mod asan_disabled {
         _is_finishing: bool,
         _prev: &mut PreviousStack,
     ) {
+        assert!(super::SUPPORTED_ARCH);
         super::wasmtime_fiber_switch(top_of_stack);
     }
 

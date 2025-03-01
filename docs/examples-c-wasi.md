@@ -10,12 +10,12 @@ This example shows off how to instantiate a wasm module using WASI imports.
 ## Wasm Source code
 
 ```rust,ignore
-{{#include ../examples/wasi/wasm/wasi.rs}}
+{{#include ../examples/wasm/wasi.rs}}
 ```
 
 
 ## `wasi.c`
 
 ```c
-{{#include ../examples/wasi/main.c}}
+{{#include ../examples/wasip1/main.c}}
 ```

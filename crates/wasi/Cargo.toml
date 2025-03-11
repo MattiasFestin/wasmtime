@@ -58,6 +58,7 @@ default = [ "preview1"]
 preview1 = [
     "dep:wiggle",
 ]
+deterministic_testing = []
 
 [[test]]
 name = "process_stdin"

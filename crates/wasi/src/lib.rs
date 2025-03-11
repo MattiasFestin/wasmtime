@@ -237,6 +237,8 @@ use wasmtime::component::Linker;
 pub mod bindings;
 mod clocks;
 mod ctx;
+#[cfg(feature = "deterministic_testing")]
+pub mod deterministic_testing;
 mod error;
 mod filesystem;
 mod host;
@@ -244,17 +246,19 @@ mod ip_name_lookup;
 mod network;
 pub mod pipe;
 mod poll;
-#[cfg(feature = "preview1")]
 pub mod preview0;
-#[cfg(feature = "preview1")]
 pub mod preview1;
 mod random;
 pub mod runtime;
 mod stdio;
 mod tcp;
+mod traits;
 mod udp;
 mod view;
 mod write_stream;
+
+#[cfg(feature = "examples")]
+pub mod examples;
 
 pub use self::clocks::{HostMonotonicClock, HostWallClock};
 pub use self::ctx::{WasiCtx, WasiCtxBuilder};
@@ -283,6 +287,27 @@ pub use wasmtime_wasi_io::streams::{
     DynInputStream, DynOutputStream, InputStream, OutputStream, StreamError, StreamResult,
 };
 pub use wasmtime_wasi_io::{IoImpl, IoView};
+
+// Re-export the traits
+pub use traits::{
+    WasiPreview1Api,
+    WasiPreview1Clock,
+    WasiPreview1Env,
+    WasiPreview1Fd,
+    WasiPreview1Path,
+    WasiPreview1Poll,
+    WasiPreview1Proc,
+    WasiPreview1Random,
+    WasiPreview1Sock,
+};
+
+// Re-export deterministic testing utilities
+#[cfg(feature = "deterministic_testing")]
+pub use deterministic_testing::{
+    WasiP1Data,
+    MockWasiPreview1,
+    CallRecords,
+};
 
 /// Add all WASI interfaces from this crate into the `linker` provided.
 ///
